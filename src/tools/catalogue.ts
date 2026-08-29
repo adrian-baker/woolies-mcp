@@ -13,7 +13,11 @@ const listingArguments = {
   sort: z
     .enum(SORT_OPTIONS)
     .default("Relevance")
-    .describe("Result order. CUPAsc is cheapest by unit price."),
+    .describe(
+      "Result order. CUPAsc uses the site's raw cup price, whose measure varies per product " +
+        "($/L, $/100g, $/1ea), so it ranks meaningfully only within one category and is absent " +
+        "for many products.",
+    ),
   includeOutOfStock: z
     .boolean()
     .default(false)

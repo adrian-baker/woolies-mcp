@@ -14,9 +14,12 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Search Woolworths products",
       description:
-        "Search the Woolworths New Zealand catalogue by keyword. Returns in-stock products with " +
-        `price, unit price, special status and availability, the total match count, and the ` +
-        `category counts to refine with. ${LOCATION_CAVEAT}`,
+        "Search the Woolworths New Zealand catalogue by keyword. Returns `products` for this " +
+        "page, `matchesAvailable` for the whole query, and a `coverage` sentence saying whether " +
+        "this is everything — read it before answering cheapest/only/none questions. Extra query " +
+        "words are ANDed, including sizes, and the site's ranking pads pages with loosely " +
+        "related products, so check each name. `unitPrice` is a formatted string whose measure " +
+        `varies per product and is absent for many, so compare it only within a category. ${LOCATION_CAVEAT}`,
       inputSchema: {
         query: z.string().min(1).describe("Search keywords, e.g. 'rose wine' or 'oat milk'."),
         page: z
@@ -28,7 +31,11 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
         sort: z
           .enum(SORT_OPTIONS)
           .default("Relevance")
-          .describe("Result order. CUPAsc is cheapest by unit price."),
+          .describe(
+            "Result order. CUPAsc uses the site's raw cup price, whose measure varies per " +
+              "product ($/L, $/100g, $/1ea), so it ranks meaningfully only within one category " +
+              "and is absent for many products.",
+          ),
         includeOutOfStock: z
           .boolean()
           .default(false)
@@ -139,7 +146,8 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Get a Woolworths product",
       description:
-        "Fetch one product by SKU, with its price, size, unit price, availability, category " +
+        "Fetch one product by SKU, with its price, size, unit price (a formatted string whose " +
+        "measure varies per product, and absent for many), availability, category " +
         "breadcrumb, description, ingredients, allergens, claims, nutrition, origins and health " +
         "star rating. `purchasingUnit` ('Each' or 'Kg') is what the cart tools need for " +
         "pricingUnit, and `canBuyByWeight` says whether 'Kg' with a decimal quantity is allowed. " +

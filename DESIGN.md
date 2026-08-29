@@ -65,6 +65,11 @@ automatic redirect handling discards.
   "red onion" (18), "leeks" (24) and "oat milk" (37). An empty page 2 is normal when page 1 held
   everything — that is what the "past the end" coverage sentence is for, and it is not evidence
   the count is wrong. Page until a page comes back short.
+- **`CUPAsc` sorts by the raw cup price, not a normalised one.** Cup prices are published in
+  different measures ($/L, $/100g, $/1ea) and the sort compares the bare number, so a mixed result
+  set comes back in no meaningful order — an unfiltered specials search interleaved $12.99 wine
+  with $2.70 household items. It is only useful within a single category or aisle. `PriceAsc` and
+  `PriceDesc` sort correctly. Many products carry no cup price at all.
 - **Product detail is not a search item.** No `stockLevel`, `slug`, `barcode` or `type`; `images`
   is an array not an object; adds `breadcrumb`, `productStoresStockLevel` and an HTML
   `description`.
