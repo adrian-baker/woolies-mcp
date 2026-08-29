@@ -65,6 +65,14 @@ automatic redirect handling discards.
   "red onion" (18), "leeks" (24) and "oat milk" (37). An empty page 2 is normal when page 1 held
   everything — that is what the "past the end" coverage sentence is for, and it is not evidence
   the count is wrong. Page until a page comes back short.
+- **Order history is `shoppers/my/past-orders`, not `orders/my/past`.** The latter is the base
+  for order-change actions and 404s on GET. The list returns `{filterList, items, totalItems}`;
+  its `filterList` reports "Past 180 Days" as the selected window and a `filter` query parameter
+  is ignored, so the response is the site's default window rather than all history.
+- **Pick-up stores are listed once per region, plus a catch-all.** `/addresses/pickup-addresses`
+  returned 364 rows for 188 distinct stores; every store also appears under "All Pick up
+  locations", and name and address never differ between an id's rows. Dedupe by id and keep the
+  named regions.
 - **`CUPAsc` sorts by the raw cup price, not a normalised one.** Cup prices are published in
   different measures ($/L, $/100g, $/1ea) and the sort compares the bare number, so a mixed result
   set comes back in no meaningful order — an unfiltered specials search interleaved $12.99 wine

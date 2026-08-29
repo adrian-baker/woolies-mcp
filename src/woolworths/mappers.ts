@@ -7,6 +7,7 @@ import type {
   RawPrice,
   RawProductDetail,
   RawProductItem,
+  RawPastOrder,
   RawSearchListItem,
   RawShopperEnvelope,
   RawSize,
@@ -147,7 +148,8 @@ export interface Store {
   readonly id: number;
   readonly name: string;
   readonly address: string;
-  readonly area: string;
+  /** A store is listed under each region it belongs to. */
+  readonly areas: readonly string[];
 }
 
 const UNKNOWN_AVAILABILITY = "Unknown";
@@ -326,15 +328,40 @@ export function toDepartmentSummary(department: Department): DepartmentSummary {
 }
 
 export function toStores(areas: readonly RawStoreArea[]): readonly Store[] {
-  return areas.flatMap((area) =>
-    area.storeAddresses.map((store) => ({
-      id: store.id,
-      name: tidy(store.name),
-      // The site packs suburb, centre and postcode into one comma-joined string.
-      address: tidy(store.address.split(",").join(", ")),
-      area: area.name,
-    })),
-  );
+  const byId = new Map<number, { store: Store; areas: string[] }>();
+
+  for (const area of areas) {
+    for (const store of area.storeAddresses) {
+      const existing = byId.get(store.id);
+      if (existing !== undefined) {
+        existing.areas.push(area.name);
+        continue;
+      }
+      byId.set(store.id, {
+        areas: [area.name],
+        store: {
+          id: store.id,
+          name: tidy(store.name),
+          // The site packs suburb, centre and postcode into one comma-joined string.
+          address: tidy(store.address.split(",").join(", ")),
+          areas: [],
+        },
+      });
+    }
+  }
+
+  return [...byId.values()].map(({ store, areas: memberships }) => ({
+    ...store,
+    areas: meaningfulAreas(memberships),
+  }));
+}
+
+/** Every store also appears under this catch-all, which says nothing once a real region is known. */
+const ALL_LOCATIONS_AREA = "All Pick up locations";
+
+function meaningfulAreas(areas: readonly string[]): readonly string[] {
+  const named = [...new Set(areas)].filter((area) => area !== ALL_LOCATIONS_AREA);
+  return named.length > 0 ? named : [ALL_LOCATIONS_AREA];
 }
 
 /** "Fresh Salad & Herbs" -> "fresh-salad-herbs", matching the site's own browse URLs. */
@@ -708,4 +735,53 @@ function explainQuantityChange(
   return applied > requested
     ? "The site raised it, which usually means a minimum order quantity for this product."
     : "The site lowered it, which usually means a stock or maximum-quantity limit.";
+}
+
+
+export interface PastOrder {
+  readonly orderId: number;
+  /** The reference as the site shows it, e.g. prefix "CD" with the order number. */
+  readonly reference: string;
+  readonly orderedAt: string;
+  readonly method: string;
+  readonly status: string;
+  readonly total: number;
+  readonly deliveryFee: number;
+  readonly fulfilmentDate: string;
+  readonly fulfilmentTime: string;
+  readonly isEditable: boolean;
+}
+
+export interface OrderHistory extends Coverage {
+  readonly orders: readonly PastOrder[];
+}
+
+export function toPastOrder(order: RawPastOrder): PastOrder {
+  return {
+    orderId: order.orderId,
+    reference: `${order.prefix}${order.orderId}`,
+    orderedAt: order.orderDate,
+    method: order.method,
+    status: order.status,
+    total: order.total,
+    deliveryFee: order.deliveryFee,
+    fulfilmentDate: order.fulfilmentDate,
+    fulfilmentTime: order.fulfilmentTime,
+    isEditable: order.isEditable,
+  };
+}
+
+export function toOrderHistory(orders: readonly RawPastOrder[], totalItems: number): OrderHistory {
+  return {
+    orders: orders.map(toPastOrder),
+    returned: orders.length,
+    matchesAvailable: totalItems,
+    page: 1,
+    complete: false,
+    coverage:
+      `Showing ${orders.length} of ${totalItems} orders the site returns by default. Its own ` +
+      `filter list calls this window "Past 180 Days" and ignores a filter parameter, so orders ` +
+      `older than that may exist and are NOT included. Do not tell the shopper this is every ` +
+      `order they have placed, or that they have never ordered something.`,
+  };
 }

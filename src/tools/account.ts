@@ -218,13 +218,13 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
     "get_order_history",
     {
       title: "Get past Woolworths orders",
-      description: `List the account's past orders with their dates, statuses and totals. ${NEEDS_ACCOUNT}`,
-      inputSchema: {
-        page: z.number().int().min(1).default(1).describe("1-based page of orders."),
-      },
+      description:
+        "List the account's past orders with their references, dates, fulfilment slots, statuses " +
+        "and totals. Read `coverage`: the site returns only its default recent window, so an " +
+        `order's absence is not evidence it was never placed. ${NEEDS_ACCOUNT}`,
+      inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ page }) =>
-      guarded("get_order_history", async () => jsonResult(await api.getOrderHistory(page))),
+    async () => guarded("get_order_history", async () => jsonResult(await api.getOrderHistory())),
   );
 }

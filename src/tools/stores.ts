@@ -13,8 +13,10 @@ export function registerStoreTools(server: McpServer, api: WoolworthsApi): void 
       title: "Find Woolworths pick-up stores",
       description:
         "List Woolworths New Zealand pick-up locations, filtered by a name or address fragment. " +
-        "These are collection points; the delivery location that sets prices is separate and is " +
-        "managed with get_location and set_location.",
+        "Read `coverage`: an unfiltered call returns only a sample, so do not conclude a town " +
+        "has no store without searching for it. Each store appears once, with every region it is " +
+        "listed under in `areas`. These are collection points; the delivery location that sets " +
+        "prices is separate and is managed with get_location and set_location.",
       inputSchema: {
         query: z
           .string()

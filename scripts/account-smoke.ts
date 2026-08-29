@@ -113,6 +113,26 @@ check(
   promotional.map((section) => section.section).join(", ") || "(none)",
 );
 
+console.log("\nget_order_history()");
+const orderHistory = await api.getOrderHistory();
+check(
+  "order history returned",
+  orderHistory.orders.length > 0,
+  `${orderHistory.orders.length} orders, most recent total $${orderHistory.orders[0]?.total ?? "?"}`,
+);
+check(
+  "orders carry a reference, status and total",
+  orderHistory.orders.every(
+    (order) => order.reference !== "" && order.status !== "" && typeof order.total === "number",
+  ),
+  orderHistory.orders[0]?.status ?? "(none)",
+);
+check(
+  "order history states its coverage",
+  orderHistory.coverage.length > 0,
+  orderHistory.coverage.slice(0, 58),
+);
+
 if (failures.length === 0) {
   console.log("\nAccount smoke passed.");
 } else {

@@ -42,7 +42,7 @@ This is an unofficial project, not affiliated with Woolworths — please read
 | `list_categories(department?)` | The browse tree: departments, or one department's aisles and shelves. |
 | `browse_category(department, aisle?, shelf?, page?, sort?)` | Products in a category, by the slugs `list_categories` returns. |
 | `get_specials(department?, page?, sort?)` | What is on special, optionally in one department. |
-| `find_stores(query?)` | Pick-up locations by name or address fragment. |
+| `find_stores(query?)` | Pick-up locations by name or address fragment, one row per store with its regions. |
 
 ### Account tools
 
@@ -55,7 +55,7 @@ This is an unofficial project, not affiliated with Woolworths — please read
 | `set_cart_quantities(items)` | Several lines in one call, with a per-item outcome. |
 | `remove_from_cart(sku, pricingUnit?)` | Removes a line. |
 | `get_past_purchases()` | Purchase history, returned separately from Woolworths' promotional suggestions. |
-| `get_order_history(page?)` | Past orders. |
+| `get_order_history()` | Past orders, for the site's default recent window. |
 
 Sign-in happens in a real browser. Auth0 challenges non-browser clients with a captcha, so
 `npm run login` opens a window, you sign in, and the captured session is handed to the server,

@@ -365,3 +365,28 @@ export const purchaseSectionSchema = z.object({
 export const forgottenProductsResponseSchema = z.object({
   products: z.array(purchaseSectionSchema),
 });
+
+
+/**
+ * `GET /shoppers/my/past-orders`. Every field was present on all six live orders, so all are
+ * required. The endpoint's own `filterList` reports "Past 180 Days" as the selected window and
+ * ignores a `filter` query parameter, so this is the site's default window, not all history.
+ */
+export const pastOrderSchema = z.object({
+  orderId: z.number(),
+  prefix: z.string(),
+  orderDate: z.string(),
+  method: z.string(),
+  total: z.number(),
+  fulfilmentDate: z.string(),
+  fulfilmentTime: z.string(),
+  deliveryFee: z.number(),
+  status: z.string(),
+  isEditable: z.boolean(),
+});
+
+export const pastOrdersResponseSchema = z.object({
+  items: z.array(pastOrderSchema),
+  totalItems: z.number(),
+});
+export type RawPastOrder = z.infer<typeof pastOrderSchema>;

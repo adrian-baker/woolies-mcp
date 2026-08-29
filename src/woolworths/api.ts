@@ -16,12 +16,14 @@ import {
   type Cart,
   slugify,
   toCartAdjustment,
+  toOrderHistory,
   toCoverage,
   toEmptyPageCoverage,
   toPurchaseSection,
   type CategoryCount,
   type CategoryIndex,
   type Coverage,
+  type OrderHistory,
   type PurchaseSection,
   type CompactProduct,
   type Department,
@@ -33,6 +35,7 @@ import {
   departmentsResponseSchema,
   fulfilmentContextSchema,
   parseResponse,
+  pastOrdersResponseSchema,
   pickupAddressesResponseSchema,
   forgottenProductsResponseSchema,
   productDetailSchema,
@@ -607,9 +610,15 @@ export class WoolworthsApi {
     return parsed.products.map(toPurchaseSection);
   }
 
-  async getOrderHistory(page: number): Promise<unknown> {
+  /**
+   * `orders/my/past` is the base for order-change actions and 404s on GET; the list lives at
+   * `shoppers/my/past-orders`.
+   */
+  async getOrderHistory(): Promise<OrderHistory> {
     await this.requireSignedIn();
-    return this.client.get("orders/my/past", { page, size: 10 });
+    const payload = await this.client.get("shoppers/my/past-orders");
+    const parsed = parseResponse(pastOrdersResponseSchema, payload, "/shoppers/my/past-orders");
+    return toOrderHistory(parsed.items, parsed.totalItems);
   }
 }
 
