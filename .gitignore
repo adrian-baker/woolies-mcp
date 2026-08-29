@@ -1,0 +1,16 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+.env
+.env.*
+!.env.example
+
+# Signed-in session, captured by `npm run login`
+.cookie-jar.json
+
+.DS_Store
+
+# Signed-in cookie jar. Never commit: grants full account access.
+session.json
+data/

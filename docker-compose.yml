@@ -1,0 +1,21 @@
+services:
+  woolies-mcp:
+    build: .
+    image: woolies-mcp:latest
+    container_name: woolies-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # The signed-in session lives here so a restart or redeploy does not need another sign-in.
+      WOOLIES_SESSION_FILE: /data/session.json
+    volumes:
+      - ./data:/data
+    # Bound to loopback only: the public edge is Tailscale Funnel, which proxies to 127.0.0.1.
+    ports:
+      - "127.0.0.1:8480:8480"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8480/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
