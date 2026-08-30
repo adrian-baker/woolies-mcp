@@ -18,6 +18,7 @@ and orders on the website.
 3. Get the list — the document they named, or what they pasted.
 4. If the list came from a document that also holds a menu or dishes, read those: they supply
    purpose (below). Do not go hunting for a menu that was not offered.
+
 ## Choosing products
 
 Search per item, then pick. `search_products_batch` does several searches in one call, which is

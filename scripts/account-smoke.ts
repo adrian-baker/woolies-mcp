@@ -47,13 +47,21 @@ check("signed in", status.signedIn, status.firstName ?? "(no name)");
 
 console.log("\nget_cart() — before");
 const before = await api.getCart();
-check("cart readable", true, `${before.lineCount} lines, ${before.totalQuantity} items, subtotal ${before.totals.subtotal}`);
+check(
+  "cart readable",
+  true,
+  `${before.lineCount} lines, ${before.totalQuantity} items, subtotal ${before.totals.subtotal}`,
+);
 
 console.log(`\nset_cart_quantity(${EACH_SKU}, 1, Each)`);
 const addedEach = await api.setCartQuantity(EACH_SKU, 1, "Each");
 check("Each add succeeded", addedEach.successful, JSON.stringify(addedEach));
 check("Each quantity echoed", addedEach.appliedQuantity === 1, String(addedEach.appliedQuantity));
-check("Each pricingUnit echoed", addedEach.appliedPricingUnit === "Each", addedEach.appliedPricingUnit ?? "(none)");
+check(
+  "Each pricingUnit echoed",
+  addedEach.appliedPricingUnit === "Each",
+  addedEach.appliedPricingUnit ?? "(none)",
+);
 
 console.log(`\nset_cart_quantity(${KG_SKU}, ${KG_QUANTITY}, Kg)`);
 const addedKg = await api.setCartQuantity(KG_SKU, KG_QUANTITY, "Kg");
@@ -63,11 +71,19 @@ check(
   Math.abs(addedKg.appliedQuantity - KG_QUANTITY) < 0.001,
   String(addedKg.appliedQuantity),
 );
-check("Kg pricingUnit echoed", addedKg.appliedPricingUnit === "Kg", addedKg.appliedPricingUnit ?? "(none)");
+check(
+  "Kg pricingUnit echoed",
+  addedKg.appliedPricingUnit === "Kg",
+  addedKg.appliedPricingUnit ?? "(none)",
+);
 
 console.log(`\nset_cart_quantity(${EACH_SKU}, 3, Each) — update`);
 const updated = await api.setCartQuantity(EACH_SKU, 3, "Each");
-check("quantity is absolute, not additive", updated.appliedQuantity === 3, String(updated.appliedQuantity));
+check(
+  "quantity is absolute, not additive",
+  updated.appliedQuantity === 3,
+  String(updated.appliedQuantity),
+);
 
 console.log("\nget_cart() — with the test items");
 const during = await api.getCart();
@@ -80,7 +96,11 @@ check(
 
 console.log("\nremoving both test items");
 const removedEach = await api.removeFromCart(EACH_SKU);
-check("Each removed", removedEach.successful, `trolley quantity now ${removedEach.trolleyTotalQuantity}`);
+check(
+  "Each removed",
+  removedEach.successful,
+  `trolley quantity now ${removedEach.trolleyTotalQuantity}`,
+);
 const removedKg = await api.removeFromCart(KG_SKU);
 check("Kg removed", removedKg.successful, `trolley quantity now ${removedKg.trolleyTotalQuantity}`);
 check(

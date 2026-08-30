@@ -27,6 +27,18 @@ of Service. See the README for the full statement.
 - **No preferences in the server.** It supplies facts (brand, size, unit price, claims,
   ingredients); the caller chooses.
 
+## Architecture
+
+Functional core, imperative shell.
+
+- Pure: `schemas.ts` (parse), `mappers.ts` (raw JSON to the shapes a client sees). No IO, no
+  clock, no mutation of anything they did not create.
+- Shell: `session.ts`, `client.ts`, `http.ts`, `index.ts`, `session-store.ts`, `scripts/`.
+- `api.ts` straddles: it calls the shell and delegates every shape decision to the core.
+
+Parsing and mapping stay pure, so upstream shapes are exercised without a network. ESLint enforces
+this: the core is linted for immutability and `no-let`, and every declared type is readonly.
+
 ## Session
 
 Base `https://www.woolworths.co.nz/api/v1`. Without both of these the API answers 400:
@@ -40,21 +52,21 @@ automatic redirect handling discards.
 
 ## Endpoints
 
-| Endpoint | Notes |
-|---|---|
-| `GET /products?target=search&search=<q>` | `size`, `page`, `sort`, `inStockProductsOnly` |
-| `GET /products?target=browse` | see `dasFilter` below |
-| `GET /products?target=specials&useRankedSpecials=true` | accepts a department `dasFilter` |
-| `GET /products/{sku}` | detail; see attribute fields below |
-| `GET /products/departments` | the browse tree |
-| `GET /shell` | `context.fulfilment`, `context.shopper.isLoggedIn`, `context.basketTotals` |
-| `GET /suburbs?query=<name>` | suburb autocomplete; 404 without the query param |
-| `PUT /fulfilment/my/suburbs/{id}` | sets delivery context; returns the shell envelope |
-| `GET /addresses/pickup-addresses` | 364 pick-up locations, not delivery suburbs |
-| `GET /trolleys/my` | cart read |
-| `POST /trolleys/my/items` | cart write |
-| `GET /products/my/forgotten` | purchase history *and* promotional suggestions |
-| `GET /orders/my/past` | order history |
+| Endpoint                                               | Notes                                                                      |
+| ------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `GET /products?target=search&search=<q>`               | `size`, `page`, `sort`, `inStockProductsOnly`                              |
+| `GET /products?target=browse`                          | see `dasFilter` below                                                      |
+| `GET /products?target=specials&useRankedSpecials=true` | accepts a department `dasFilter`                                           |
+| `GET /products/{sku}`                                  | detail; see attribute fields below                                         |
+| `GET /products/departments`                            | the browse tree                                                            |
+| `GET /shell`                                           | `context.fulfilment`, `context.shopper.isLoggedIn`, `context.basketTotals` |
+| `GET /suburbs?query=<name>`                            | suburb autocomplete; 404 without the query param                           |
+| `PUT /fulfilment/my/suburbs/{id}`                      | sets delivery context; returns the shell envelope                          |
+| `GET /addresses/pickup-addresses`                      | 364 pick-up locations, not delivery suburbs                                |
+| `GET /trolleys/my`                                     | cart read                                                                  |
+| `POST /trolleys/my/items`                              | cart write                                                                 |
+| `GET /products/my/forgotten`                           | purchase history _and_ promotional suggestions                             |
+| `GET /orders/my/past`                                  | order history                                                              |
 
 ### Response quirks
 

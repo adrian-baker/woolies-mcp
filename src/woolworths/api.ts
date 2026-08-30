@@ -217,7 +217,11 @@ export class WoolworthsApi {
   private categoryIndex: CategoryIndex | undefined;
   private readonly now: () => number;
 
-  constructor(client: WoolworthsClient, authenticator: Authenticator, now: () => number = Date.now) {
+  constructor(
+    client: WoolworthsClient,
+    authenticator: Authenticator,
+    now: () => number = Date.now,
+  ) {
     this.client = client;
     this.authenticator = authenticator;
     this.now = now;
@@ -335,7 +339,10 @@ export class WoolworthsApi {
               store.name.toLowerCase().includes(needle) ||
               store.address.toLowerCase().includes(needle),
           );
-    return { stores: matched, ...toCoverage(matched.length, matched.length, 1, "pick-up locations", "") };
+    return {
+      stores: matched,
+      ...toCoverage(matched.length, matched.length, 1, "pick-up locations", ""),
+    };
   }
 
   private async productQuery(
@@ -622,10 +629,7 @@ export class WoolworthsApi {
   }
 }
 
-function exactMatch(
-  matches: readonly SuburbMatch[],
-  suburb: string,
-): SuburbMatch | undefined {
+function exactMatch(matches: readonly SuburbMatch[], suburb: string): SuburbMatch | undefined {
   const wanted = suburb.trim().toLowerCase();
   return matches.find((match) => match.name.trim().toLowerCase() === wanted);
 }

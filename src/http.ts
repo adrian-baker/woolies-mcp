@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer as createHttpServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { ConfigError, readHttpConfig, type HttpConfig } from "./config.js";
 import { createServer, createWoolworthsApi, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { SessionStore, restoreStoredSession } from "./session-store.js";
@@ -42,7 +46,7 @@ async function handleMcp(
  * setting, and declares `Transport.onclose` non-optional while implementing it as optional. The
  * casts describe the SDK's real contract, not a shape left unchecked.
  */
-type TransportOptions = ConstructorParameters<typeof StreamableHTTPServerTransport>[0];
+type TransportOptions = Readonly<ConstructorParameters<typeof StreamableHTTPServerTransport>[0]>;
 
 function statelessTransport(): StreamableHTTPServerTransport {
   return new StreamableHTTPServerTransport({
@@ -145,9 +149,9 @@ export function startHttpServer(config: HttpConfig): ReturnType<typeof createHtt
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
 
     if (path === "/healthz") {
-      res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({ status: "ok", server: SERVER_NAME, version: SERVER_VERSION }),
-      );
+      res
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify({ status: "ok", server: SERVER_NAME, version: SERVER_VERSION }));
       return;
     }
 

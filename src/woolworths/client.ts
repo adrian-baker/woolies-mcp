@@ -1,9 +1,4 @@
-import {
-  API_BASE,
-  API_REQUEST_HEADER,
-  API_REQUEST_HEADER_VALUE,
-  Session,
-} from "./session.js";
+import { API_BASE, API_REQUEST_HEADER, API_REQUEST_HEADER_VALUE, Session } from "./session.js";
 import { delay, Throttle } from "./throttle.js";
 
 /** An array repeats the key, which is how `dasFilter` stacks department, aisle and shelf. */
@@ -127,7 +122,8 @@ interface Attempt {
 function buildUrl(path: string, query: Readonly<Record<string, QueryValue>>): URL {
   const url = new URL(path, API_BASE);
   for (const [key, value] of Object.entries(query)) {
-    if (Array.isArray(value)) {
+    // Narrowing on typeof keeps the element type; Array.isArray widens a readonly array to any[].
+    if (typeof value === "object") {
       for (const member of value) url.searchParams.append(key, member);
     } else {
       url.searchParams.set(key, String(value));

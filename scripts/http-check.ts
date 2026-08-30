@@ -41,7 +41,11 @@ await client.connect(transport as unknown as Parameters<typeof client.connect>[0
 check("initialize", true, JSON.stringify(client.getServerVersion()));
 
 const { tools } = await client.listTools();
-check("tools/list", tools.length > 0, `${tools.length} tools: ${tools.map((t) => t.name).join(", ")}`);
+check(
+  "tools/list",
+  tools.length > 0,
+  `${tools.length} tools: ${tools.map((t) => t.name).join(", ")}`,
+);
 
 const called = await client.callTool({ name: "get_location", arguments: {} });
 const text = (called.content as { type: string; text?: string }[])[0]?.text ?? "";

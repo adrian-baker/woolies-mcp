@@ -22,7 +22,7 @@ export const priceSchema = z.object({
   canShowOriginalPrice: z.boolean().nullish(),
   promotionEndDate: nullableString,
 });
-export type RawPrice = z.infer<typeof priceSchema>;
+export type RawPrice = Readonly<z.infer<typeof priceSchema>>;
 
 export const sizeSchema = z.object({
   volumeSize: nullableString,
@@ -30,7 +30,7 @@ export const sizeSchema = z.object({
   cupPrice: nullableNumber,
   cupMeasure: nullableString,
 });
-export type RawSize = z.infer<typeof sizeSchema>;
+export type RawSize = Readonly<z.infer<typeof sizeSchema>>;
 
 /** A `products.items` entry with `type: "Product"`. */
 export const productItemSchema = z.object({
@@ -51,7 +51,7 @@ export const productItemSchema = z.object({
   availabilityStatus: nullableString,
   isAgeRestricted: z.boolean().nullish(),
 });
-export type RawProductItem = z.infer<typeof productItemSchema>;
+export type RawProductItem = Readonly<z.infer<typeof productItemSchema>>;
 
 /**
  * `products.items` mixes products with ad tiles ("PromoTile") and whatever the site adds next,
@@ -60,7 +60,7 @@ export type RawProductItem = z.infer<typeof productItemSchema>;
  * case and arrive typed but empty.
  */
 export const searchListItemSchema = z.looseObject({ type: z.string() });
-export type RawSearchListItem = z.infer<typeof searchListItemSchema>;
+export type RawSearchListItem = Readonly<z.infer<typeof searchListItemSchema>>;
 
 export const facetSchema = z.object({
   key: z.string(),
@@ -69,7 +69,7 @@ export const facetSchema = z.object({
   productCount: z.number(),
   group: nullableString,
 });
-export type RawFacet = z.infer<typeof facetSchema>;
+export type RawFacet = Readonly<z.infer<typeof facetSchema>>;
 
 export const sortOptionSchema = z.object({
   value: z.string(),
@@ -86,7 +86,7 @@ export const searchResponseSchema = z.object({
   sortOptions: z.array(sortOptionSchema).nullish(),
   currentSortOption: nullableString,
 });
-export type RawSearchResponse = z.infer<typeof searchResponseSchema>;
+export type RawSearchResponse = Readonly<z.infer<typeof searchResponseSchema>>;
 
 const breadcrumbNodeSchema = z.object({ name: z.string(), value: nullableNumber }).nullish();
 
@@ -128,7 +128,7 @@ export const productDetailSchema = z.object({
     })
     .nullish(),
 });
-export type RawProductDetail = z.infer<typeof productDetailSchema>;
+export type RawProductDetail = Readonly<z.infer<typeof productDetailSchema>>;
 
 const shelfSchema = z.object({ id: z.number(), label: z.string(), url: z.string() });
 
@@ -141,27 +141,26 @@ export const departmentSchema = z.object({
   id: z.number(),
   label: z.string(),
   url: z.string(),
-  dasFacets: z
-    .array(
-      z.object({
-        key: z.string(),
-        value: z.string(),
-        name: z.string(),
-        productCount: z.number(),
-        // Observed null for an aisle with no shelves; that null means exactly "no shelves".
-        shelfResponses: z.array(shelfSchema).nullish(),
-      }),
-    ),
+  dasFacets: z.array(
+    z.object({
+      key: z.string(),
+      value: z.string(),
+      name: z.string(),
+      productCount: z.number(),
+      // Observed null for an aisle with no shelves; that null means exactly "no shelves".
+      shelfResponses: z.array(shelfSchema).nullish(),
+    }),
+  ),
 });
 export const departmentsResponseSchema = z.array(departmentSchema);
-export type RawDepartment = z.infer<typeof departmentSchema>;
+export type RawDepartment = Readonly<z.infer<typeof departmentSchema>>;
 
 const storeAreaSchema = z.object({
   id: z.number(),
   name: z.string(),
   storeAddresses: z.array(z.object({ id: z.number(), name: z.string(), address: z.string() })),
 });
-export type RawStoreArea = z.infer<typeof storeAreaSchema>;
+export type RawStoreArea = Readonly<z.infer<typeof storeAreaSchema>>;
 
 export const pickupAddressesResponseSchema = z.object({
   storeAreas: z.array(storeAreaSchema),
@@ -190,10 +189,14 @@ export const fulfilmentContextSchema = z.object({
     }),
   }),
 });
-export type RawFulfilmentEnvelope = z.infer<typeof fulfilmentContextSchema>;
+export type RawFulfilmentEnvelope = Readonly<z.infer<typeof fulfilmentContextSchema>>;
 
 /** Parses at the boundary, naming the endpoint and the offending field when the shape has moved. */
-export function parseResponse<T>(schema: z.ZodType<T>, payload: unknown, endpoint: string): T {
+export function parseResponse<T>(
+  schema: Readonly<z.ZodType<T>>,
+  payload: unknown,
+  endpoint: string,
+): T {
   const result = schema.safeParse(payload);
   if (result.success) return result.data;
   const issues = result.error.issues
@@ -212,6 +215,8 @@ export function parseResponse<T>(schema: z.ZodType<T>, payload: unknown, endpoin
 /** JSON, or a description of why it could not be rendered. Never silently empty. */
 function safeStringify(payload: unknown): string {
   try {
+    // JSON.stringify is typed as returning string but returns undefined for undefined input.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     return JSON.stringify(payload, null, 2) ?? String(payload);
   } catch (error: unknown) {
     return `<unserialisable payload: ${error instanceof Error ? error.message : String(error)}>`;
@@ -219,7 +224,10 @@ function safeStringify(payload: unknown): string {
 }
 
 /** Names the keys of the objects the failures point at, so nested shape changes are visible. */
-function describeFailingObjects(payload: unknown, issues: readonly { path: PropertyKey[] }[]): string {
+function describeFailingObjects(
+  payload: unknown,
+  issues: readonly { path: PropertyKey[] }[],
+): string {
   const parents = new Set<string>();
   for (const issue of issues) {
     if (issue.path.length === 0) continue;
@@ -237,12 +245,10 @@ function describeFailingObjects(payload: unknown, issues: readonly { path: Prope
 }
 
 function resolvePath(payload: unknown, path: readonly string[]): unknown {
-  let current = payload;
-  for (const step of path) {
+  return path.reduce<unknown>((current, step) => {
     if (current === null || typeof current !== "object") return undefined;
-    current = (current as Record<string, unknown>)[step];
-  }
-  return current;
+    return (current as Record<string, unknown>)[step];
+  }, payload);
 }
 
 /** Top-level key names of a payload, for diagnostics. Never includes values. */
@@ -250,7 +256,7 @@ function describeKeys(payload: unknown): string {
   if (payload === null || payload === undefined) return String(payload);
   if (Array.isArray(payload)) return `array(${payload.length})`;
   if (typeof payload !== "object") return typeof payload;
-  const keys = Object.keys(payload as object);
+  const keys = Object.keys(payload);
   const shown = keys.slice(0, 40).join(", ");
   return keys.length > 40 ? `${shown}, …(${keys.length} keys)` : shown;
 }
@@ -273,7 +279,7 @@ export const shopperContextSchema = z.object({
     }),
   }),
 });
-export type RawShopperEnvelope = z.infer<typeof shopperContextSchema>;
+export type RawShopperEnvelope = Readonly<z.infer<typeof shopperContextSchema>>;
 
 /**
  * The response to `POST /trolleys/my/items`, from captured signed-in traffic.
@@ -304,7 +310,7 @@ export const trolleyItemSchema = z.object({
   size: sizeSchema.nullish(),
   availabilityStatus: nullableString,
 });
-export type RawTrolleyItem = z.infer<typeof trolleyItemSchema>;
+export type RawTrolleyItem = Readonly<z.infer<typeof trolleyItemSchema>>;
 
 /**
  * The trolley read. Every field is required: a cart that cannot be read must fail loudly, never
@@ -349,7 +355,6 @@ export const orderListSchema = z.object({
   totalItems: z.number(),
 });
 
-
 /**
  * `GET /products/my/forgotten`. `products` is a list of SECTIONS, not products. Observed live
  * with two: "Items previously purchased" (real history) and "Our picks this week" (advertising).
@@ -365,7 +370,6 @@ export const purchaseSectionSchema = z.object({
 export const forgottenProductsResponseSchema = z.object({
   products: z.array(purchaseSectionSchema),
 });
-
 
 /**
  * `GET /shoppers/my/past-orders`. Every field was present on all six live orders, so all are
@@ -389,4 +393,4 @@ export const pastOrdersResponseSchema = z.object({
   items: z.array(pastOrderSchema),
   totalItems: z.number(),
 });
-export type RawPastOrder = z.infer<typeof pastOrderSchema>;
+export type RawPastOrder = Readonly<z.infer<typeof pastOrderSchema>>;

@@ -41,11 +41,7 @@ async function main(): Promise<void> {
     located.suburb.id === EXPECTED_SUBURB_ID,
     `${located.suburb.name} = ${located.suburb.id}`,
   );
-  check(
-    "shell address",
-    located.fulfilment.address.includes(SUBURB),
-    located.fulfilment.address,
-  );
+  check("shell address", located.fulfilment.address.includes(SUBURB), located.fulfilment.address);
   check(
     "fulfilment area id",
     located.fulfilment.areaId === EXPECTED_AREA_ID,
@@ -99,9 +95,7 @@ async function main(): Promise<void> {
     product.description !== undefined,
     `${product.description?.slice(0, 60) ?? "(none)"}…`,
   );
-  console.log(
-    `  detail: ${JSON.stringify({ ...product, description: undefined }, null, 0)}`,
-  );
+  console.log(`  detail: ${JSON.stringify({ ...product, description: undefined }, null, 0)}`);
 
   console.log("\nlist_categories()");
   const departments = await api.listCategories();
@@ -120,7 +114,11 @@ async function main(): Promise<void> {
     size: 10,
   });
   // Also proves the derived aisle slug is right: a wrong slug returns an empty page.
-  check("shelf browse returned products", browsed.products.length > 0, `${browsed.products.length} items`);
+  check(
+    "shelf browse returned products",
+    browsed.products.length > 0,
+    `${browsed.products.length} items`,
+  );
   console.log(`  cheapest: ${JSON.stringify(browsed.products[0])}`);
 
   console.log("\nget_specials(meat-poultry)");

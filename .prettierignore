@@ -1,0 +1,7 @@
+dist/
+node_modules/
+package-lock.json
+session.json
+
+# Hand-maintained prose and tables; Prettier repads tables and churns every edit.
+*.md

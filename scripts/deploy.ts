@@ -37,10 +37,10 @@ async function main(): Promise<void> {
   await assertCleanTree();
 
   step("Shipping HEAD");
-  await pipeline(["git", ["archive", "--format=tar", "HEAD"]], [
-    "ssh",
-    [HOST, `tar -x -C '${REMOTE_DIR}'`],
-  ]);
+  await pipeline(
+    ["git", ["archive", "--format=tar", "HEAD"]],
+    ["ssh", [HOST, `tar -x -C '${REMOTE_DIR}'`]],
+  );
 
   await copyEnvIfMissing();
 
@@ -110,8 +110,12 @@ function ssh(command: string): Promise<void> {
 async function sshStatus(command: string): Promise<number> {
   return new Promise((resolve) => {
     const child = spawn("ssh", [HOST, command], { stdio: "ignore" });
-    child.on("close", (code) => resolve(code ?? 1));
-    child.on("error", () => resolve(1));
+    child.on("close", (code) => {
+      resolve(code ?? 1);
+    });
+    child.on("error", () => {
+      resolve(1);
+    });
   });
 }
 

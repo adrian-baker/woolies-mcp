@@ -28,8 +28,16 @@ const hasUsername = /name=["']username["']/i.test(html);
 
 const checks: [string, boolean, string][] = [
   ["entry point reachable", response.ok, `HTTP ${response.status}`],
-  ["landed on the Auth0 credential UI", landed.origin === "https://auth.woolworths.co.nz", landed.origin + landed.pathname],
-  ["state parses out of the page", state !== undefined && state.length > 0, state === undefined ? "(absent)" : `${state.length} chars`],
+  [
+    "landed on the Auth0 credential UI",
+    landed.origin === "https://auth.woolworths.co.nz",
+    landed.origin + landed.pathname,
+  ],
+  [
+    "state parses out of the page",
+    state !== undefined && state.length > 0,
+    state === undefined ? "(absent)" : `${state.length} chars`,
+  ],
   ["username field present", hasUsername, hasUsername ? "yes" : "no"],
 ];
 
@@ -38,5 +46,7 @@ for (const [name, passed, detail] of checks) {
   console.log(`  [${passed ? "PASS" : "FAIL"}] ${name}: ${detail}`);
   if (!passed) failed += 1;
 }
-console.log(failed === 0 ? "\nLogin chain reachable (no credentials used)." : `\nFAILED: ${failed} check(s)`);
+console.log(
+  failed === 0 ? "\nLogin chain reachable (no credentials used)." : `\nFAILED: ${failed} check(s)`,
+);
 process.exitCode = failed === 0 ? 0 : 1;

@@ -169,7 +169,11 @@ function toPurchasingUnit(unit: string, selected: string | null | undefined): Pu
  * empty array was observed on paneer whose own ingredients list is milk.
  */
 export type AllergenInfo =
-  | { readonly status: "stated"; readonly contains: readonly string[]; readonly mayContain: string | undefined }
+  | {
+      readonly status: "stated";
+      readonly contains: readonly string[];
+      readonly mayContain: string | undefined;
+    }
   | { readonly status: "notStated"; readonly warning: string };
 
 const ALLERGENS_NOT_STATED =
@@ -192,7 +196,7 @@ export type IngredientInfo =
   | { readonly status: "notStated"; readonly warning: string };
 
 export function toIngredientInfo(
-  ingredients: { ingredients: readonly string[] } | null | undefined,
+  ingredients: Readonly<{ ingredients: readonly string[] }> | null | undefined,
 ): IngredientInfo {
   const listed = (ingredients?.ingredients ?? []).filter((entry) => entry.trim() !== "");
   if (listed.length === 0) {
@@ -278,7 +282,7 @@ function locate(
   group: string,
   value: string,
   index: CategoryIndex | undefined,
-): { department: string; aisle?: string; shelf?: string } | undefined {
+): Readonly<{ department: string; aisle?: string; shelf?: string }> | undefined {
   if (index === undefined) return undefined;
   switch (group) {
     case "Department": {
@@ -415,7 +419,7 @@ export function partitionSearchItems(items: readonly RawSearchListItem[]): Searc
   return { products, skippedTypes: [...skippedTypes], rejections };
 }
 
-function describeIssues(error: ZodError): string {
+function describeIssues(error: Readonly<ZodError>): string {
   return error.issues
     .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
     .join("; ");
@@ -439,7 +443,7 @@ function describeUnitPrice(size: RawSize | null | undefined): string | undefined
   return `$${cupPrice.toFixed(2)} / ${cupMeasure}`;
 }
 
-function toBreadcrumb(breadcrumb: RawProductDetail["breadcrumb"]): readonly string[] {
+function toBreadcrumb(breadcrumb: Readonly<RawProductDetail["breadcrumb"]>): readonly string[] {
   if (breadcrumb === null || breadcrumb === undefined) return [];
   return [breadcrumb.department, breadcrumb.aisle, breadcrumb.shelf]
     .map((node) => optionalText(node?.name))
@@ -545,7 +549,6 @@ export function toCartLines(items: readonly RawTrolleyItem[]): readonly CartLine
   return items.map(toCartLine);
 }
 
-
 /**
  * Whether a list response is the whole answer or a slice of it.
  *
@@ -598,12 +601,16 @@ export function toCoverage(
       `Showing ${returned} of about ${matchesAvailable} matching ${noun} (page ${page}) — the ` +
       `count is the site's own and has been observed off by one. This is NOT the full result ` +
       `set. Do not answer cheapest/best/only/none-available from these ${returned} alone; ` +
-      `${refinement}`,
+      refinement,
   };
 }
 
 /** A page past the end is stated, so an empty list is never read as "nothing matches". */
-export function toEmptyPageCoverage(page: number, matchesAvailable: number, noun: string): Coverage {
+export function toEmptyPageCoverage(
+  page: number,
+  matchesAvailable: number,
+  noun: string,
+): Coverage {
   return {
     returned: 0,
     matchesAvailable,
@@ -614,7 +621,6 @@ export function toEmptyPageCoverage(page: number, matchesAvailable: number, noun
       `this page. This does not mean there are no matches — request an earlier page.`,
   };
 }
-
 
 /**
  * One labelled block from the past-purchases endpoint.
@@ -632,11 +638,13 @@ export interface PurchaseSection extends Coverage {
 /** The site's own label for the block that reflects what the shopper actually bought. */
 const PURCHASE_HISTORY_SECTION = "items previously purchased";
 
-export function toPurchaseSection(section: {
-  section: string;
-  itemCount: number;
-  products: readonly RawProductItem[];
-}): PurchaseSection {
+export function toPurchaseSection(
+  section: Readonly<{
+    section: string;
+    itemCount: number;
+    products: readonly RawProductItem[];
+  }>,
+): PurchaseSection {
   const isPurchaseHistory = section.section.trim().toLowerCase() === PURCHASE_HISTORY_SECTION;
   return {
     section: section.section,
@@ -657,7 +665,6 @@ function historyCoverage(returned: number, isPurchaseHistory: boolean): Coverage
       `habits or preferences.`;
   return { returned, matchesAvailable: undefined, page: 1, complete: false, coverage };
 }
-
 
 /**
  * What the site actually did to a requested cart line.
@@ -736,7 +743,6 @@ function explainQuantityChange(
     ? "The site raised it, which usually means a minimum order quantity for this product."
     : "The site lowered it, which usually means a stock or maximum-quantity limit.";
 }
-
 
 export interface PastOrder {
   readonly orderId: number;

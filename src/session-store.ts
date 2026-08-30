@@ -45,7 +45,9 @@ export class SessionStore {
       raw = await readFile(path, "utf8");
     } catch (error: unknown) {
       if (isMissingFile(error)) return undefined;
-      throw new Error(`Stored session at ${path} could not be read: ${describe(error)}`);
+      throw new Error(`Stored session at ${path} could not be read: ${describe(error)}`, {
+        cause: error,
+      });
     }
 
     const parsed: unknown = JSON.parse(raw);
@@ -82,13 +84,14 @@ function readCookies(parsed: unknown): readonly ImportedCookie[] | undefined {
 }
 
 function isMissingFile(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as { code?: string }).code === "ENOENT";
+  return (
+    typeof error === "object" && error !== null && (error as { code?: string }).code === "ENOENT"
+  );
 }
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
 
 /**
  * Loads a stored sign-in into a running server. Shared by both entry points so stdio and HTTP

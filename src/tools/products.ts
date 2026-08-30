@@ -108,7 +108,7 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
         "finding many products costs one round trip. Every group carries its own `coverage` " +
         "sentence and the same caveats as search_products: the ranking pads results, extra query " +
         "words are ANDed, and a truncated group cannot answer cheapest/only/none questions. " +
-        `${LOCATION_CAVEAT}`,
+        LOCATION_CAVEAT,
       inputSchema: {
         queries: z
           .array(z.string().min(1))
@@ -161,7 +161,6 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ sku }) =>
-      guarded("get_product", async () => jsonResult(await api.getProduct(sku))),
+    async ({ sku }) => guarded("get_product", async () => jsonResult(await api.getProduct(sku))),
   );
 }

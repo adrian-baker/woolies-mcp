@@ -31,31 +31,31 @@ This is an unofficial project, not affiliated with Woolworths — please read
 
 ## Tools
 
-| Tool | What it does |
-|---|---|
+| Tool                                                                    | What it does                                                                                                                                                                 |
+| ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `search_products(query, page?, sort?, department?, includeOutOfStock?)` | Keyword search. Returns compact products, `matchesAvailable`, a coverage line, and category counts carrying browse slugs. In-stock only unless asked otherwise; 40 per page. |
-| `search_products_batch(queries, resultsPerQuery?, department?)` | Several searches in one call, grouped by query. |
-| `get_product(sku)` | One product by SKU: breadcrumb, description, ingredients, claims, nutrition, origins, purchasing unit. |
-| `get_product_label(sku)` | The packaging photo, as an image block, for when the label is the only source. |
-| `get_location()` | The suburb, fulfilment method and store the session is shopping from. |
-| `set_location(suburb)` | Switches to a New Zealand suburb. An ambiguous name returns the matches instead of guessing. |
-| `list_categories(department?)` | The browse tree: departments, or one department's aisles and shelves. |
-| `browse_category(department, aisle?, shelf?, page?, sort?)` | Products in a category, by the slugs `list_categories` returns. |
-| `get_specials(department?, page?, sort?)` | What is on special, optionally in one department. |
-| `find_stores(query?)` | Pick-up locations by name or address fragment, one row per store with its regions. |
+| `search_products_batch(queries, resultsPerQuery?, department?)`         | Several searches in one call, grouped by query.                                                                                                                              |
+| `get_product(sku)`                                                      | One product by SKU: breadcrumb, description, ingredients, claims, nutrition, origins, purchasing unit.                                                                       |
+| `get_product_label(sku)`                                                | The packaging photo, as an image block, for when the label is the only source.                                                                                               |
+| `get_location()`                                                        | The suburb, fulfilment method and store the session is shopping from.                                                                                                        |
+| `set_location(suburb)`                                                  | Switches to a New Zealand suburb. An ambiguous name returns the matches instead of guessing.                                                                                 |
+| `list_categories(department?)`                                          | The browse tree: departments, or one department's aisles and shelves.                                                                                                        |
+| `browse_category(department, aisle?, shelf?, page?, sort?)`             | Products in a category, by the slugs `list_categories` returns.                                                                                                              |
+| `get_specials(department?, page?, sort?)`                               | What is on special, optionally in one department.                                                                                                                            |
+| `find_stores(query?)`                                                   | Pick-up locations by name or address fragment, one row per store with its regions.                                                                                           |
 
 ### Account tools
 
-| Tool | What it does |
-|---|---|
-| `auth_status()` | Whether the session is signed in, and until when. Read-only. |
-| `sign_in()` | Reports how to sign in; the server cannot do it unattended (see below). |
-| `get_cart()` | What is in the trolley, with the trolley total. |
-| `set_cart_quantity(sku, quantity, pricingUnit)` | Sets a line to an absolute quantity; 0 removes it. Decimals for `Kg`. |
-| `set_cart_quantities(items)` | Several lines in one call, with a per-item outcome. |
-| `remove_from_cart(sku, pricingUnit?)` | Removes a line. |
-| `get_past_purchases()` | Purchase history, returned separately from Woolworths' promotional suggestions. |
-| `get_order_history()` | Past orders, for the site's default recent window. |
+| Tool                                            | What it does                                                                    |
+| ----------------------------------------------- | ------------------------------------------------------------------------------- |
+| `auth_status()`                                 | Whether the session is signed in, and until when. Read-only.                    |
+| `sign_in()`                                     | Reports how to sign in; the server cannot do it unattended (see below).         |
+| `get_cart()`                                    | What is in the trolley, with the trolley total.                                 |
+| `set_cart_quantity(sku, quantity, pricingUnit)` | Sets a line to an absolute quantity; 0 removes it. Decimals for `Kg`.           |
+| `set_cart_quantities(items)`                    | Several lines in one call, with a per-item outcome.                             |
+| `remove_from_cart(sku, pricingUnit?)`           | Removes a line.                                                                 |
+| `get_past_purchases()`                          | Purchase history, returned separately from Woolworths' promotional suggestions. |
+| `get_order_history()`                           | Past orders, for the site's default recent window.                              |
 
 Sign-in happens in a real browser. Auth0 challenges non-browser clients with a captcha, so
 `npm run login` opens a window, you sign in, and the captured session is handed to the server,
@@ -85,6 +85,9 @@ npm install
 npm run build
 npm start          # stdio; speaks JSON-RPC on stdout, logs on stderr
 ```
+
+`npm run check` runs typecheck, lint, format check and build — the pre-push command. `npm run
+lint:fix` and `npm run format` apply what is fixable. CI runs the same four on Node 20 and 22.
 
 `npm run smoke` exercises the live API end to end against its own anonymous session, throttled to
 one request per second, and prints a pass/fail line per check. `npm run typecheck` covers `src`
@@ -122,10 +125,10 @@ Then ask for the shopping in the normal way, or invoke it directly with `/woolie
 
 Two entry points share one `createServer`:
 
-| Entry | Command | Used for |
-|---|---|---|
-| stdio | `node dist/index.js` | local use, launched by an MCP client |
-| Streamable HTTP | `node dist/http.js` | remote use over HTTP |
+| Entry           | Command              | Used for                             |
+| --------------- | -------------------- | ------------------------------------ |
+| stdio           | `node dist/index.js` | local use, launched by an MCP client |
+| Streamable HTTP | `node dist/http.js`  | remote use over HTTP                 |
 
 `node dist/http.js` serves the same tools over Streamable HTTP, which is what a hosted MCP client
 connects to. Any host that runs Node or Docker will do; the sections below describe one

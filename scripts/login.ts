@@ -40,7 +40,7 @@ async function main(): Promise<void> {
   const returnTo = Buffer.from(`${SITE}/`).toString("base64");
   await page.goto(`${START}?redirectUrl=${encodeURIComponent(returnTo)}`);
 
-  const signedIn = await waitForSignIn(context, page.url());
+  const signedIn = await waitForSignIn(context);
   if (!signedIn) {
     await browser.close();
     fail("Timed out waiting for sign-in. Nothing was captured.");
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
 }
 
 /** Polls the site's own signed-in check, which is what the server will use too. */
-async function waitForSignIn(context: BrowserContext, _startUrl: string): Promise<boolean> {
+async function waitForSignIn(context: BrowserContext): Promise<boolean> {
   const deadline = Date.now() + WAIT_FOR_SIGN_IN_MS;
   process.stdout.write("Waiting for sign-in");
   while (Date.now() < deadline) {
@@ -71,7 +71,7 @@ async function waitForSignIn(context: BrowserContext, _startUrl: string): Promis
     const response = await context.request
       .get(SIGNED_IN_CHECK, { headers: { accept: "application/json" }, failOnStatusCode: false })
       .catch(() => undefined);
-    if (response === undefined || !response.ok()) continue;
+    if (!response?.ok()) continue;
     const body: unknown = await response.json().catch(() => undefined);
     if (isSignedIn(body)) {
       process.stdout.write("\n");

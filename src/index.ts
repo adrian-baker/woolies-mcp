@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  SessionStore,
-  defaultSessionFilePath,
-  restoreStoredSession,
-} from "./session-store.js";
+import { SessionStore, defaultSessionFilePath, restoreStoredSession } from "./session-store.js";
 import { createServer, createWoolworthsApi, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
 /**

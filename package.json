@@ -34,16 +34,21 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run build",
     "typecheck": "tsc -p tsconfig.check.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "start": "node dist/index.js",
-    "smoke": "tsx scripts/smoke.ts",
-    "check:stdio": "tsx scripts/stdio-check.ts",
     "start:http": "node dist/http.js",
-    "check:http": "tsx scripts/http-check.ts",
-    "check:login": "tsx scripts/login-probe.ts",
-    "smoke:account": "tsx scripts/account-smoke.ts",
     "login": "tsx scripts/login.ts",
     "deploy": "tsx scripts/deploy.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:account": "tsx scripts/account-smoke.ts",
+    "check:stdio": "tsx scripts/stdio-check.ts",
+    "check:http": "tsx scripts/http-check.ts",
+    "check:login": "tsx scripts/login-probe.ts",
     "check:adjustment": "tsx scripts/adjustment-check.ts"
   },
   "dependencies": {
@@ -52,9 +57,15 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^26.4.0",
+    "eslint": "^10.9.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-functional": "^10.0.0",
     "playwright": "^1.62.1",
+    "prettier": "^3.9.6",
     "tsx": "^4.23.12",
-    "typescript": "^7.0.2"
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0"
   }
 }

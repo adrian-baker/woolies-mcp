@@ -95,11 +95,18 @@ export class Session {
     return serialised.cookies.map((cookie) => {
       const domain = typeof cookie.domain === "string" ? cookie.domain : "";
       const path = typeof cookie.path === "string" ? cookie.path : "/";
-      const attributes = [`${cookie.key}=${cookie.value ?? ""}`, `Domain=${domain}`, `Path=${path}`];
+      const attributes = [
+        `${cookie.key}=${cookie.value ?? ""}`,
+        `Domain=${domain}`,
+        `Path=${path}`,
+      ];
       if (typeof cookie.expires === "string") attributes.push(`Expires=${cookie.expires}`);
       if (cookie.httpOnly === true) attributes.push("HttpOnly");
       if (cookie.secure === true) attributes.push("Secure");
-      return { setCookie: attributes.join("; "), url: `https://${domain.replace(/^\./, "")}${path}` };
+      return {
+        setCookie: attributes.join("; "),
+        url: `https://${domain.replace(/^\./, "")}${path}`,
+      };
     });
   }
 
@@ -144,13 +151,7 @@ export class Session {
       ...init,
       redirect: "manual",
       signal: AbortSignal.timeout(this.timeoutMs),
-      headers: {
-        "user-agent": BROWSER_USER_AGENT,
-        accept: "application/json, text/plain, */*",
-        "accept-language": "en-NZ,en;q=0.9",
-        ...(cookie === "" ? {} : { cookie }),
-        ...init.headers,
-      },
+      headers: mergeHeaders(cookie, init.headers),
     });
     await this.absorbCookies(url, response);
     return response;
@@ -167,6 +168,21 @@ export class Session {
       }
     }
   }
+}
+
+/**
+ * `HeadersInit` is also `Headers` or an entry array, both of which spread into an object as
+ * nothing useful, so the caller's headers are merged through `Headers` and win over the defaults.
+ */
+function mergeHeaders(cookie: string, overrides: RequestInit["headers"]): Headers {
+  const headers = new Headers({
+    "user-agent": BROWSER_USER_AGENT,
+    accept: "application/json, text/plain, */*",
+    "accept-language": "en-NZ,en;q=0.9",
+  });
+  if (cookie !== "") headers.set("cookie", cookie);
+  for (const [key, value] of new Headers(overrides).entries()) headers.set(key, value);
+  return headers;
 }
 
 function isRedirect(status: number): boolean {
