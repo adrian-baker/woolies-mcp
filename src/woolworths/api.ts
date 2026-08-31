@@ -245,9 +245,9 @@ export class WoolworthsApi {
     return this.getAccountStatus();
   }
 
-  /** When the imported session expires, if it carries an expiry. */
-  sessionExpiry(): Promise<Date | undefined> {
-    return this.client.shopperSession.sessionExpiry();
+  /** The session cookie's stated `Expires` date: an upper bound, not proof the session works. */
+  cookieExpiry(): Promise<Date | undefined> {
+    return this.client.shopperSession.cookieExpiry();
   }
 
   async searchProducts(request: SearchRequest): Promise<SearchResult> {

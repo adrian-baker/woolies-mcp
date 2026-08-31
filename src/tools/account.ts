@@ -24,6 +24,16 @@ const NEEDS_ACCOUNT =
   "Needs a signed-in session; run `npm run login` where the server runs, or call sign_in for " +
   "the details.";
 
+/** States the cookie date as a ceiling, never as a date to plan around. */
+function describeCookieExpiry(expiry: Date | undefined): string {
+  if (expiry === undefined)
+    return "The session carries no dated cookie, so it can end at any time.";
+  return (
+    `The session cookie is dated ${expiry.toISOString()}, which is the longest it can last, ` +
+    "not a guarantee it will."
+  );
+}
+
 export function registerAccountTools(server: McpServer, api: WoolworthsApi): void {
   server.registerTool(
     "sign_in",
@@ -50,9 +60,13 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Woolworths sign-in status",
       description:
-        "Report whether this session is signed in to a Woolworths account, and whether signing " +
-        "in is possible at all. The catalogue tools work signed out and are unaffected; the " +
-        "cart and purchase-history tools need a signed-in session.",
+        "Report whether this session is signed in to a Woolworths account. `signedIn` comes from " +
+        "a live call, so it is current. `cookieExpiresAt`, when present, is only the date the " +
+        "site stamped on the session cookie: an upper bound on how long the session can last, " +
+        "not a promise it will — a session can end sooner through a sign-out elsewhere, a " +
+        "password change or a security event. The only proof a session still works is a live " +
+        "call. The catalogue tools work signed out and are unaffected; the cart and " +
+        "purchase-history tools need a signed-in session.",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -61,16 +75,17 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
         // Read-only: reports the session as it stands and never triggers a sign-in attempt,
         // so it is safe to call freely. Use sign_in to actually authenticate.
         const status = await api.getAccountStatus();
-        const expiry = await api.sessionExpiry();
+        // Only reported when signed in: a forward date beside signedIn:false claims a session
+        // that does not exist.
+        const cookieExpiry = status.signedIn ? await api.cookieExpiry() : undefined;
         return jsonResult({
           signedIn: status.signedIn,
           firstName: status.firstName,
           accountToolsUsable: status.signedIn,
-          sessionExpiresAt: expiry?.toISOString(),
+          cookieExpiresAt: cookieExpiry?.toISOString(),
           hint: status.signedIn
-            ? expiry === undefined
-              ? undefined
-              : `Signed in until ${expiry.toISOString()}; run \`npm run login\` again after that.`
+            ? `Signed in now. ${describeCookieExpiry(cookieExpiry)} If any account tool reports ` +
+              "not signed in, the session ended early — run `npm run login` again."
             : "Run `npm run login` to sign in; call sign_in for the details.",
         });
       }),

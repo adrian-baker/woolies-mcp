@@ -110,8 +110,14 @@ export class Session {
     });
   }
 
-  /** When the site session cookie expires, or undefined if the jar holds no dated session cookie. */
-  async sessionExpiry(): Promise<Date | undefined> {
+  /**
+   * The `Expires` date the site put on its session cookie, or undefined if the jar holds none.
+   *
+   * This is the server's claim about the cookie, not evidence the session still works: a session
+   * can be ended early by signing out elsewhere, a password change or a security event, and the
+   * cookie keeps its original date regardless. Only a live call proves a session.
+   */
+  async cookieExpiry(): Promise<Date | undefined> {
     const cookies = await this.jar.getCookies(SITE_ORIGIN);
     const dated = cookies
       .filter((cookie) => cookie.key.startsWith("cw-"))

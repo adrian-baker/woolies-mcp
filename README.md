@@ -10,7 +10,7 @@ your trolley — but it never places an order, pays, or books a delivery slot.
 
 **Authentication is human-driven.** A browser window opens and you sign in there, as you would on
 the website — the server never sees your password and stores no credentials. It keeps only the
-resulting session, which Woolworths expires after 7 days. See [DESIGN.md](DESIGN.md) for the API
+resulting session, whose cookie Woolworths dates 7 days ahead. See [DESIGN.md](DESIGN.md) for the API
 facts and the rules the server holds to.
 
 This is an unofficial project, not affiliated with Woolworths — please read
@@ -59,7 +59,10 @@ This is an unofficial project, not affiliated with Woolworths — please read
 
 Sign-in happens in a real browser. Auth0 challenges non-browser clients with a captcha, so
 `npm run login` opens a window, you sign in, and the captured session is handed to the server,
-which persists it and reloads it at boot. The shop session lasts 7 days.
+which persists it and reloads it at boot. The session cookie is dated 7 days ahead, which is the
+longest it can last rather than a guarantee: signing out elsewhere, a password change or a
+security event ends it sooner. `auth_status` reports `signedIn` from a live call; treat any
+account tool reporting not-signed-in as the cue to run `npm run login` again.
 
 **No checkout, ever.** There is no tool for placing an order, paying, or booking a delivery slot,
 and the upstream endpoints for those are deliberately left unbound. A person reviews the trolley

@@ -165,8 +165,11 @@ is fatal rather than ignored.
 
 `npm run check:login` verifies the unauthenticated half continuously, using no credentials.
 
-The shop session cookie `cw-lrkswrdjp` lasts 7 days. `context.shopper.isLoggedIn` in `/shell`
-reports sign-in state without credentials.
+The shop session cookie `cw-lrkswrdjp` is dated 7 days ahead. That date is the site's claim about
+the cookie, an upper bound rather than a guarantee — a sign-out elsewhere, a password change or a
+security event ends the session earlier and the cookie keeps its original date. Only a live call
+proves a session, so `signedIn` comes from `context.shopper.isLoggedIn` in `/shell` and the cookie
+date is reported as `cookieExpiresAt`, and only while signed in.
 
 ## Stack and deployment
 

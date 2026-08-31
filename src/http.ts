@@ -88,7 +88,7 @@ async function handleSessionImport(
   }
 
   const status = await api.importSession(cookies);
-  const expiry = await api.sessionExpiry();
+  const cookieExpiry = status.signedIn ? await api.cookieExpiry() : undefined;
   // Stored only once the site confirms the handover worked, so a restart never restores junk.
   if (status.signedIn) await store.save(cookies);
   console.error(
@@ -98,7 +98,8 @@ async function handleSessionImport(
     JSON.stringify({
       imported: cookies.length,
       signedIn: status.signedIn,
-      expires: expiry?.toISOString(),
+      // The cookie's stated ceiling, not a promise the session lasts that long.
+      cookieExpiresAt: cookieExpiry?.toISOString(),
       persisted: status.signedIn && store.isEnabled,
     }),
   );
