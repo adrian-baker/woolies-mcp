@@ -35,8 +35,8 @@ export class Authenticator {
 
 /** Raised by account operations when the session is anonymous. */
 export class NotSignedInError extends Error {
-  constructor() {
-    super(HANDOVER_DETAIL);
+  constructor(options?: ErrorOptions) {
+    super(HANDOVER_DETAIL, options);
     this.name = "NotSignedInError";
   }
 }

@@ -1,5 +1,5 @@
 import { Authenticator, NotSignedInError, type SignInOutcome } from "./auth.js";
-import { WoolworthsClient, type QueryValue } from "./client.js";
+import { WoolworthsApiError, WoolworthsClient, type QueryValue } from "./client.js";
 import type { ImportedCookie } from "./session.js";
 import {
   buildCategoryIndex,
@@ -54,6 +54,9 @@ export const DEFAULT_PAGE_SIZE = 40;
 
 /** Long enough to cover a burst of cart writes, short enough that a dropped session surfaces fast. */
 const SIGNED_IN_TTL_MS = 60_000;
+
+/** What every account endpoint returns once the session is no longer honoured. */
+const UNAUTHORIZED = 401;
 
 /** How a line is priced. Captured traffic sends exactly these two values. */
 export const PRICING_UNITS = ["Each", "Kg"] as const;
@@ -459,12 +462,10 @@ export class WoolworthsApi {
   }
 
   /**
-   * Every account operation goes through here: sign in if needed, and fail with the reason if
-   * that did not work, rather than letting a 403 surface from somewhere deeper.
-   */
-  /**
-   * Confirmed sign-in is cached briefly so a run of cart writes costs one /shell call rather than
-   * one per write. Cleared by `invalidateSignedIn` the moment a call comes back unauthenticated.
+   * Confirmed sign-in is cached briefly so a burst of cart writes costs one /shell call rather
+   * than one per write. The window is safe because `onAccountEndpoint` drops the cache on the
+   * first 401: a session that dies mid-window costs one failed call, which reports correctly,
+   * rather than a minute of wrong answers.
    */
   private signedInUntilMs = Number.NEGATIVE_INFINITY;
   private cachedStatus: AccountStatus | undefined;
@@ -483,6 +484,34 @@ export class WoolworthsApi {
     return status;
   }
 
+  /**
+   * Runs an account operation, turning the site's 401 into the message that says what to do.
+   *
+   * A 401 means this session is no longer honoured. The cached status is dropped so the next
+   * call re-checks instead of trusting the window, and the raw "Ooops looks like you cant
+   * perform that action" is replaced by the sign-in instructions. Not a session rejection in the
+   * `client.ts` sense: re-bootstrapping produces an anonymous session, which is what 401s.
+   */
+  private async accountGet(path: string, query: Readonly<Record<string, QueryValue>> = {}) {
+    return this.onAccountEndpoint(() => this.client.get(path, query));
+  }
+
+  private async accountPost(path: string, body: unknown) {
+    return this.onAccountEndpoint(() => this.client.post(path, body));
+  }
+
+  private async onAccountEndpoint<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (error: unknown) {
+      if (error instanceof WoolworthsApiError && error.status === UNAUTHORIZED) {
+        this.invalidateSignedIn();
+        throw new NotSignedInError({ cause: error });
+      }
+      throw error;
+    }
+  }
+
   private async confirmSignedIn(): Promise<AccountStatus> {
     const status = await this.getAccountStatus();
     if (status.signedIn) return status;
@@ -494,7 +523,7 @@ export class WoolworthsApi {
 
   async getCart(): Promise<Cart> {
     await this.requireSignedIn();
-    const payload = await this.client.get("trolleys/my");
+    const payload = await this.accountGet("trolleys/my");
     const parsed = parseResponse(trolleyResponseSchema, payload, "/trolleys/my");
     const lines = toCartLines(parsed.items.flatMap((group) => group.products));
     const totals = parsed.context.basketTotals;
@@ -525,7 +554,7 @@ export class WoolworthsApi {
     pricingUnit: PricingUnit,
   ): Promise<CartWriteResult> {
     await this.requireSignedIn();
-    const payload = await this.client.post("trolleys/my/items", {
+    const payload = await this.accountPost("trolleys/my/items", {
       sku,
       quantity,
       pricingUnit,
@@ -608,7 +637,7 @@ export class WoolworthsApi {
    */
   async getPastPurchases(): Promise<readonly PurchaseSection[]> {
     await this.requireSignedIn();
-    const payload = await this.client.get("products/my/forgotten");
+    const payload = await this.accountGet("products/my/forgotten");
     const parsed = parseResponse(
       forgottenProductsResponseSchema,
       payload,
@@ -623,7 +652,7 @@ export class WoolworthsApi {
    */
   async getOrderHistory(): Promise<OrderHistory> {
     await this.requireSignedIn();
-    const payload = await this.client.get("shoppers/my/past-orders");
+    const payload = await this.accountGet("shoppers/my/past-orders");
     const parsed = parseResponse(pastOrdersResponseSchema, payload, "/shoppers/my/past-orders");
     return toOrderHistory(parsed.items, parsed.totalItems);
   }

@@ -21,5 +21,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
-      # The live smoke needs network and a signed-in account, so it stays out of CI.
       - run: npm run build
+      # Deterministic checks: no network, no account.
+      - run: npm run check:adjustment
+      - run: npm run check:session-death
+      # The live smoke needs network and a signed-in account, so it stays out of CI.

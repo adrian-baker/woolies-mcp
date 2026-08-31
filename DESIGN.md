@@ -85,6 +85,12 @@ automatic redirect handling discards.
   returned 364 rows for 188 distinct stores; every store also appears under "All Pick up
   locations", and name and address never differ between an id's rows. Dedupe by id and keep the
   named regions.
+- **Account endpoints answer 401 once a session is not honoured.** `trolleys/my`,
+  `products/my/forgotten` and `shoppers/my/past-orders` all 401 anonymously; none returns an
+  empty 200, so there is no silent-wrong-answer path. `/shell` stays 200 and reports
+  `isLoggedIn: false`, which is why it is the sign-in source. A 401 is handled apart from the
+  400/403 session rejection in `client.ts`: re-bootstrapping yields an anonymous session, which
+  is what 401s. It invalidates the cached sign-in and surfaces the sign-in instructions.
 - **`CUPAsc` sorts by the raw cup price, not a normalised one.** Cup prices are published in
   different measures ($/L, $/100g, $/1ea) and the sort compares the bare number, so a mixed result
   set comes back in no meaningful order — an unfiltered specials search interleaved $12.99 wine
