@@ -15,7 +15,9 @@ import {
   type AccountStatus,
   type Cart,
   slugify,
+  optionalText,
   toCartAdjustment,
+  toCartTotals,
   toOrderHistory,
   toCoverage,
   toEmptyPageCoverage,
@@ -79,8 +81,13 @@ export interface CartWriteResult {
   /** True when the site did not honour the request exactly; `adjustment` then says how. */
   readonly adjusted: boolean;
   readonly adjustment: string | undefined;
-  /** Sum of quantities across the whole trolley, not a count of lines. */
-  readonly trolleyTotalQuantity: number;
+  /** Whether the sku has a line in the trolley after the write. */
+  readonly lineInTrolley: boolean;
+  /**
+   * Sum of quantities across the whole trolley, not a count of lines. Undefined when the site
+   * did not report it, which it does not on a write that left no line — never read as zero.
+   */
+  readonly trolleyTotalQuantity: number | undefined;
   readonly successful: boolean;
 }
 
@@ -531,13 +538,7 @@ export class WoolworthsApi {
       lines,
       lineCount: totals.totalItems,
       totalQuantity: totals.totalItemQuantity,
-      totals: {
-        subtotal: totals.subtotal,
-        savings: totals.savings,
-        deliveryFees: totals.deliveryFees,
-        bagFees: totals.bagFees,
-        totalIncludingDeliveryFees: totals.totalIncludingDeliveryFees,
-      },
+      totals: toCartTotals(totals),
     };
   }
 
@@ -563,15 +564,20 @@ export class WoolworthsApi {
     const parsed = parseResponse(trolleyWriteResponseSchema, payload, "/trolleys/my/items");
     if (!parsed.isSuccessful) this.invalidateSignedIn();
 
-    const appliedQuantity = parsed.itemAdded.quantity;
-    const appliedPricingUnit = parsed.itemAdded.selectedPurchasingUnit;
+    // A null line means the write left no line for this sku, which is zero of it in the trolley.
+    // The site reports that with isSuccessful true, so it is an outcome, not a failure.
+    const line = parsed.itemAdded ?? undefined;
+    const appliedQuantity = line?.quantity ?? 0;
+    const appliedPricingUnit = optionalText(line?.selectedPurchasingUnit);
+    // Falls back to what was asked so an unreported unit cannot read as the site overriding it.
+    const comparedPricingUnit = appliedPricingUnit ?? pricingUnit;
     const adjustment = toCartAdjustment(
       quantity,
       appliedQuantity,
       pricingUnit,
-      appliedPricingUnit,
+      comparedPricingUnit,
       // Only fetched when the site changed something, so the common path stays one call.
-      adjustmentDiffers(quantity, appliedQuantity, pricingUnit, appliedPricingUnit)
+      adjustmentDiffers(quantity, appliedQuantity, pricingUnit, comparedPricingUnit)
         ? await this.averageWeightOf(sku)
         : undefined,
     );
@@ -583,9 +589,11 @@ export class WoolworthsApi {
       requestedPricingUnit: isRemoval ? undefined : pricingUnit,
       appliedQuantity,
       appliedPricingUnit: isRemoval ? undefined : appliedPricingUnit,
+      // Absent, not zero: a null here says the site did not report the trolley's total.
+      lineInTrolley: appliedQuantity > 0,
       adjusted: adjustment.adjusted,
       adjustment: adjustment.note,
-      trolleyTotalQuantity: parsed.totalItemQuantityInBasket,
+      trolleyTotalQuantity: parsed.totalItemQuantityInBasket ?? undefined,
       successful: parsed.isSuccessful,
     };
   }

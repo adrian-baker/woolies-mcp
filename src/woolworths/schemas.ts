@@ -291,12 +291,18 @@ export type RawShopperEnvelope = Readonly<z.infer<typeof shopperContextSchema>>;
  * how the line is priced.
  */
 export const trolleyWriteResponseSchema = z.object({
-  itemAdded: z.object({
-    sku: z.string(),
-    quantity: z.number(),
-    selectedPurchasingUnit: z.string(),
-  }),
-  totalItemQuantityInBasket: z.number(),
+  // Null when the write left no line — removing something the trolley does not hold — and
+  // `isSuccessful` still reads true, so a null here is success, not failure.
+  itemAdded: z
+    .object({
+      sku: z.string(),
+      quantity: z.number(),
+      // Null on a removal: a removal has no purchasing unit.
+      selectedPurchasingUnit: nullableString,
+    })
+    .nullish(),
+  // Null alongside a null itemAdded. Absent, never zero: the trolley still holds what it held.
+  totalItemQuantityInBasket: nullableNumber,
   isSuccessful: z.boolean(),
 });
 
@@ -327,11 +333,14 @@ export const trolleyGroupSchema = z.object({
  * `totalItemQuantity` sums the quantities on them; on a live cart these read 19 and 23.
  */
 export const basketTotalsSchema = z.object({
-  subtotal: z.string(),
-  savings: z.string(),
-  deliveryFees: z.string(),
-  bagFees: z.string(),
-  totalIncludingDeliveryFees: z.string(),
+  // Money reads null where it does not apply — savings on a trolley holding no specials. The
+  // mappers keep a null absent rather than formatting it as $0.00: no savings reported and
+  // savings of zero are different answers.
+  subtotal: nullableString,
+  savings: nullableString,
+  deliveryFees: nullableString,
+  bagFees: nullableString,
+  totalIncludingDeliveryFees: nullableString,
   totalItems: z.number(),
   totalItemQuantity: z.number(),
 });

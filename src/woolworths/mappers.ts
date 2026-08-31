@@ -477,7 +477,7 @@ function tidy(text: string): string {
 }
 
 /** Collapses the site's three ways of saying "nothing" — absent, null, empty string — into one. */
-function optionalText(value: string | null | undefined): string | undefined {
+export function optionalText(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
@@ -498,12 +498,44 @@ export interface CartLine {
   readonly availability: string | undefined;
 }
 
+/**
+ * Money as the site formats it. A field the site did not report is absent here and named in
+ * `notReported`, never rendered as $0.00: "no savings on this trolley" and "savings of zero" are
+ * different answers and only the site can tell them apart.
+ */
 export interface CartTotals {
-  readonly subtotal: string;
-  readonly savings: string;
-  readonly deliveryFees: string;
-  readonly bagFees: string;
-  readonly totalIncludingDeliveryFees: string;
+  readonly subtotal: string | undefined;
+  readonly savings: string | undefined;
+  readonly deliveryFees: string | undefined;
+  readonly bagFees: string | undefined;
+  readonly totalIncludingDeliveryFees: string | undefined;
+  readonly notReported: readonly string[];
+}
+
+export function toCartTotals(
+  totals: Readonly<{
+    subtotal?: string | null | undefined;
+    savings?: string | null | undefined;
+    deliveryFees?: string | null | undefined;
+    bagFees?: string | null | undefined;
+    totalIncludingDeliveryFees?: string | null | undefined;
+  }>,
+): CartTotals {
+  const fields = [
+    "subtotal",
+    "savings",
+    "deliveryFees",
+    "bagFees",
+    "totalIncludingDeliveryFees",
+  ] as const;
+  return {
+    subtotal: optionalText(totals.subtotal),
+    savings: optionalText(totals.savings),
+    deliveryFees: optionalText(totals.deliveryFees),
+    bagFees: optionalText(totals.bagFees),
+    totalIncludingDeliveryFees: optionalText(totals.totalIncludingDeliveryFees),
+    notReported: fields.filter((field) => optionalText(totals[field]) === undefined),
+  };
 }
 
 /**
