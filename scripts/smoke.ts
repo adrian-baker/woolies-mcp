@@ -103,17 +103,14 @@ async function main(): Promise<void> {
   const beerWine = departments.find((department) => department.slug === "beer-wine");
   check("beer-wine department present", beerWine !== undefined, beerWine?.name ?? "(missing)");
 
-  console.log("\nbrowse_category(beer-wine / wine / rose-wine)");
+  console.log("\nbrowse_category(beer-wine)");
   const browsed = await api.browseCategory({
     department: "beer-wine",
-    aisle: "wine",
-    shelf: "rose-wine",
     page: 1,
     sort: "PriceAsc",
     inStockOnly: true,
     size: 10,
   });
-  // Also proves the derived aisle slug is right: a wrong slug returns an empty page.
   check(
     "shelf browse returned products",
     browsed.products.length > 0,

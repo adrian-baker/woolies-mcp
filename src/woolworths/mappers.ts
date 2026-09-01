@@ -596,34 +596,76 @@ export interface Coverage {
   readonly coverage: string;
 }
 
-export function toCoverage(
-  returned: number,
-  matchesAvailable: number | undefined,
-  page: number,
-  noun: string,
-  refinement: string,
-): Coverage {
-  if (matchesAvailable === undefined) {
+/** The site returns -1 for a query it could not resolve, e.g. an unknown category slug. */
+const UNRESOLVED_COUNT = -1;
+
+export interface CoverageInput {
+  readonly returned: number;
+  readonly matchesAvailable: number | undefined;
+  readonly page: number;
+  readonly noun: string;
+  readonly refinement: string;
+  /** Set when an in-stock filter was applied, so an empty result can say what emptied it. */
+  readonly filteredToInStock?: boolean;
+}
+
+/**
+ * A completeness claim is only made from a coherent count.
+ *
+ * `returned >= matchesAvailable` used to be enough, which made two wrong guarantees: a `-1` count
+ * satisfied `0 >= -1`, and the site's own off-by-one satisfied `40 >= 39`. Both produced "Safe to
+ * compare across the full set" from a set that was neither complete nor countable.
+ */
+export function toCoverage(input: CoverageInput): Coverage {
+  const { returned, matchesAvailable, page, noun, refinement } = input;
+  const inStockNote =
+    input.filteredToInStock === true
+      ? ` Out-of-stock ${noun} were excluded, which alone can empty a result — retry with includeOutOfStock to tell an empty category from an unavailable one.`
+      : "";
+
+  if (matchesAvailable === undefined || matchesAvailable <= UNRESOLVED_COUNT) {
     return {
       returned,
       matchesAvailable: undefined,
       page,
       complete: false,
       coverage:
-        `Showing ${returned} ${noun} (page ${page}). The total number of matches is not known, ` +
-        `so this may not be all of them. Do not make cheapest/only/none-available claims from ` +
-        `this set; ${refinement}`,
+        `Showing ${returned} ${noun} (page ${page}). The site did not report a usable total` +
+        (matchesAvailable === undefined
+          ? ""
+          : ` (it returned ${matchesAvailable}, its value for a query it could not resolve — check the arguments)`) +
+        `, so this is NOT known to be all of them. Do not make cheapest/only/none-available ` +
+        `claims from this set; ${refinement}${inStockNote}`,
     };
   }
-  if (page === 1 && returned >= matchesAvailable) {
+
+  if (returned > matchesAvailable) {
+    return {
+      returned,
+      matchesAvailable,
+      page,
+      complete: false,
+      coverage:
+        `Showing ${returned} ${noun} while the site reports only ${matchesAvailable} matches ` +
+        `(page ${page}). The counts disagree, so neither is trustworthy and this is NOT known to ` +
+        `be the full set. Do not make cheapest/only/none-available claims from it;` +
+        ` ${refinement}${inStockNote}`,
+    };
+  }
+
+  if (page === 1 && returned === matchesAvailable) {
     return {
       returned,
       matchesAvailable,
       page,
       complete: true,
-      coverage: `Complete: all ${returned} matching ${noun} are included. Safe to compare across the full set.`,
+      coverage:
+        returned === 0
+          ? `Complete: the site reports no matching ${noun} at all.${inStockNote}`
+          : `Complete: all ${returned} matching ${noun} are included. Safe to compare across the full set.`,
     };
   }
+
   return {
     returned,
     matchesAvailable,
@@ -633,7 +675,7 @@ export function toCoverage(
       `Showing ${returned} of about ${matchesAvailable} matching ${noun} (page ${page}) — the ` +
       `count is the site's own and has been observed off by one. This is NOT the full result ` +
       `set. Do not answer cheapest/best/only/none-available from these ${returned} alone; ` +
-      refinement,
+      `${refinement}${inStockNote}`,
   };
 }
 

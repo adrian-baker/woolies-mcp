@@ -83,7 +83,7 @@ export class WoolworthsClient {
       console.error(
         `[woolies-mcp] HTTP ${first.status} from ${url.pathname}; re-bootstrapping the session`,
       );
-      await this.session.reset();
+      await this.session.refreshBootstrap();
     } else if (isTransient(first.status)) {
       console.error(
         `[woolies-mcp] HTTP ${first.status} from ${url.pathname}; retrying in ${this.retryBackoffMs}ms`,

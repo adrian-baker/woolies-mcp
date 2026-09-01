@@ -55,7 +55,7 @@ automatic redirect handling discards.
 | Endpoint                                               | Notes                                                                      |
 | ------------------------------------------------------ | -------------------------------------------------------------------------- |
 | `GET /products?target=search&search=<q>`               | `size`, `page`, `sort`, `inStockProductsOnly`                              |
-| `GET /products?target=browse`                          | see `dasFilter` below                                                      |
+| `GET /products?target=browse`                          | department-level `dasFilter` only; see below                                |
 | `GET /products?target=specials&useRankedSpecials=true` | accepts a department `dasFilter`                                           |
 | `GET /products/{sku}`                                  | detail; see attribute fields below                                         |
 | `GET /products/departments`                            | the browse tree                                                            |
@@ -99,12 +99,19 @@ automatic redirect handling discards.
 - **Product detail is not a search item.** No `stockLevel`, `slug`, `barcode` or `type`; `images`
   is an array not an object; adds `breadcrumb`, `productStoresStockLevel` and an HTML
   `description`.
-- **`dasFilter` takes slugs, repeated per level**, and a narrower level needs the wider ones:
-  `dasFilter=Department;;beer-wine;false&dasFilter=Aisle;;wine;false&dasFilter=Shelf;;rose-wine;false`.
-  Numeric ids return `totalItems: -1` and no products. It does **not** work with `target=search` —
-  every form returns zero, so `browse_category` is the only exhaustive category path.
+- **Only the Department level of `dasFilter` narrows anything.** `dasFilter=Department;;beer-wine;false`
+  works. Adding `Aisle;;wine;false` and `Shelf;;rose-wine;false` — the exact triple the site's own
+  browse page sends — returns the identical 1308 products with `breadcrumb.aisle` null and beer at
+  the top, and an aisle by numeric id behaves the same. `products/shelves` answers 400 to the
+  shapes tried. So aisle and shelf browsing has no working mechanism and `browse_category` does
+  not offer it; the aisle and shelf names are search terms, not filters.
+- **An unresolved slug returns `totalItems: -1`** with HTTP 200 and no products, for a bad
+  department or for any shelf-only filter. It is an error sentinel, not a count, and must never
+  reach a completeness claim. Slugs are validated against `/products/departments` first.
+- **`dasFilter` does not work with `target=search`** — every form returns zero.
 - **Aisles have no slug.** Departments and shelves carry `url`; an aisle's slug is its slugified
-  name ("Rose Wine" → "rose-wine").
+  name ("Rose Wine" → "rose-wine"). Since aisle filtering is inert, the derived slug is only used
+  for display.
 - **`suburbId` in the fulfilment context reads 0** even after a successful change. `address` and
   `fulfilmentStoreId` are what move; `suburbId` is not surfaced.
 - **`/suburbs` returns display names**: "Ponsonby" resolves to "Ponsonby, Auckland WA". Treat one

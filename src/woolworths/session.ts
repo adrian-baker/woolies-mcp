@@ -60,9 +60,15 @@ export class Session {
     return started;
   }
 
-  /** Discards the current cookies and bootstraps again, for use after the edge rejects a call. */
-  async reset(): Promise<void> {
-    await this.jar.removeAllCookies();
+  /**
+   * Re-runs the bootstrap after the site rejects a call, keeping every cookie.
+   *
+   * Discarding the jar here turned one 400 into a permanent sign-out: the `cw-*`, Keycloak and
+   * Auth0 cookies are the sign-in, and nothing reloads them afterwards. The edge cookies the
+   * bootstrap needs are reissued by Set-Cookie; on a live authenticated call only
+   * `akavpau_vpwww` was observed rotating.
+   */
+  async refreshBootstrap(): Promise<void> {
     await this.bootstrap();
   }
 
@@ -89,27 +95,6 @@ export class Session {
     return accepted;
   }
 
-  /** The jar's contents, for persisting a signed-in session across restarts. */
-  async exportCookies(): Promise<readonly ImportedCookie[]> {
-    const serialised = await this.jar.serialize();
-    return serialised.cookies.map((cookie) => {
-      const domain = typeof cookie.domain === "string" ? cookie.domain : "";
-      const path = typeof cookie.path === "string" ? cookie.path : "/";
-      const attributes = [
-        `${cookie.key}=${cookie.value ?? ""}`,
-        `Domain=${domain}`,
-        `Path=${path}`,
-      ];
-      if (typeof cookie.expires === "string") attributes.push(`Expires=${cookie.expires}`);
-      if (cookie.httpOnly === true) attributes.push("HttpOnly");
-      if (cookie.secure === true) attributes.push("Secure");
-      return {
-        setCookie: attributes.join("; "),
-        url: `https://${domain.replace(/^\./, "")}${path}`,
-      };
-    });
-  }
-
   /**
    * The `Expires` date the site put on its session cookie, or undefined if the jar holds none.
    *
@@ -130,11 +115,14 @@ export class Session {
   /** Issues a request with the jar applied, storing any cookies the response sets. */
   async fetch(url: URL, init: RequestInit = {}, maxRedirects = MAX_REDIRECTS): Promise<Response> {
     let target = url;
+    let request = init;
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
-      const response = await this.sendOnce(target, hop === 0 ? init : { method: "GET" });
+      const response = await this.sendOnce(target, request);
       const location = response.headers.get("location");
       if (!isRedirect(response.status) || location === null) return response;
-      target = new URL(location, target);
+      const next = new URL(location, target);
+      request = followRedirect(request, response.status, target, next);
+      target = next;
     }
     throw new SessionError(`More than ${maxRedirects} redirects starting at ${url.href}`);
   }
@@ -189,6 +177,19 @@ function mergeHeaders(cookie: string, overrides: RequestInit["headers"]): Header
   if (cookie !== "") headers.set("cookie", cookie);
   for (const [key, value] of new Headers(overrides).entries()) headers.set(key, value);
   return headers;
+}
+
+/**
+ * 307 and 308 require the method and body to be preserved. Downgrading them to a bare GET dropped
+ * the body and `x-requested-with`, which the API answers 400, which used to destroy the session.
+ * 301, 302 and 303 are followed as GET, as browsers do. Caller headers cross an origin boundary
+ * only when the origin does not change.
+ */
+function followRedirect(init: RequestInit, status: number, from: URL, to: URL): RequestInit {
+  const headers = from.origin === to.origin ? init.headers : undefined;
+  const carried = headers === undefined ? {} : { headers };
+  if (status === 307 || status === 308) return { ...init, ...carried };
+  return { method: "GET", ...carried };
 }
 
 function isRedirect(status: number): boolean {

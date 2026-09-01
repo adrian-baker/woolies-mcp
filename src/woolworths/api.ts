@@ -68,6 +68,14 @@ export type PricingUnit = (typeof PRICING_UNITS)[number];
  * What a live account call demonstrated, kept separate from what `/shell` claims so a session
  * that satisfies one and not the other is visible rather than flattened into one boolean.
  */
+/** Raised when a category slug is not in the tree, instead of letting the site answer -1. */
+export class UnknownCategoryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UnknownCategoryError";
+  }
+}
+
 export interface AccountAccess {
   readonly usable: boolean;
   readonly shellReportsSignedIn: boolean;
@@ -152,14 +160,6 @@ function adjustmentDiffers(
   ).adjusted;
 }
 
-function toDasFilters(filter: CategoryFilter): readonly string[] {
-  const levels: string[] = [];
-  if (filter.department !== undefined) levels.push(`Department;;${filter.department};false`);
-  if (filter.aisle !== undefined) levels.push(`Aisle;;${filter.aisle};false`);
-  if (filter.shelf !== undefined) levels.push(`Shelf;;${filter.shelf};false`);
-  return levels;
-}
-
 /** Non-product tiles the listings are known to mix in. Anything else is logged as unrecognised. */
 const KNOWN_TILE_TYPES = new Set(["PromoTile", "PromotionalCarousel"]);
 
@@ -187,8 +187,6 @@ export interface SearchRequest extends ListingRequest, CategoryFilter {
 
 export interface BrowseRequest extends ListingRequest {
   readonly department: string;
-  readonly aisle?: string;
-  readonly shelf?: string;
 }
 
 export interface SpecialsRequest extends ListingRequest {
@@ -297,14 +295,21 @@ export class WoolworthsApi {
   }
 
   async searchProducts(request: SearchRequest): Promise<SearchResult> {
-    const result = await this.productQuery("/products?target=search", request.page, request.sort, {
-      target: "search",
-      search: request.query,
-      size: request.size ?? DEFAULT_PAGE_SIZE,
-      page: request.page,
-      sort: request.sort,
-      inStockProductsOnly: request.inStockOnly,
-    });
+    if (request.department !== undefined) await this.assertDepartmentExists(request.department);
+    const result = await this.productQuery(
+      "/products?target=search",
+      request.page,
+      request.sort,
+      {
+        target: "search",
+        search: request.query,
+        size: request.size ?? DEFAULT_PAGE_SIZE,
+        page: request.page,
+        sort: request.sort,
+        inStockProductsOnly: request.inStockOnly,
+      },
+      request.inStockOnly,
+    );
     if (request.department === undefined) return result;
     return narrowToDepartment(result, request.department);
   }
@@ -322,32 +327,61 @@ export class WoolworthsApi {
   }
 
   /**
-   * Browses one branch of the tree. `dasFilter` repeats once per level and takes slugs, not ids
-   * (DESIGN.md, "Build notes"); a shelf without its department returns nothing.
+   * Browses a department. Only the Department level of `dasFilter` narrows anything: Aisle and
+   * Shelf were verified inert, returning the whole department with a null aisle in the response
+   * breadcrumb, so they are not offered.
    */
-  browseCategory(request: BrowseRequest): Promise<SearchResult> {
-    const levels = toDasFilters(request);
-    return this.productQuery("/products?target=browse", request.page, request.sort, {
-      target: "browse",
-      dasFilter: levels,
-      size: request.size ?? DEFAULT_PAGE_SIZE,
-      page: request.page,
-      sort: request.sort,
-      inStockProductsOnly: request.inStockOnly,
-    });
+  async browseCategory(request: BrowseRequest): Promise<SearchResult> {
+    await this.assertDepartmentExists(request.department);
+    return this.productQuery(
+      "/products?target=browse",
+      request.page,
+      request.sort,
+      {
+        target: "browse",
+        dasFilter: [`Department;;${request.department};false`],
+        size: request.size ?? DEFAULT_PAGE_SIZE,
+        page: request.page,
+        sort: request.sort,
+        inStockProductsOnly: request.inStockOnly,
+      },
+      request.inStockOnly,
+    );
   }
 
-  getSpecials(request: SpecialsRequest): Promise<SearchResult> {
+  /**
+   * An unknown slug makes the site answer `totalItems: -1` with no products, which reads as an
+   * empty category. Checking against the tree first turns a typo into an error naming the valid
+   * slugs, as `list_categories` already does.
+   */
+  private async assertDepartmentExists(slug: string): Promise<void> {
+    const departments = await this.listCategories();
+    if (departments.some((department) => department.slug === slug)) return;
+    throw new UnknownCategoryError(
+      `No department with slug '${slug}'. Valid slugs: ${departments
+        .map((department) => department.slug)
+        .join(", ")}.`,
+    );
+  }
+
+  async getSpecials(request: SpecialsRequest): Promise<SearchResult> {
     const department = request.department;
-    return this.productQuery("/products?target=specials", request.page, request.sort, {
-      target: "specials",
-      useRankedSpecials: true,
-      ...(department === undefined ? {} : { dasFilter: [`Department;;${department};false`] }),
-      size: request.size ?? DEFAULT_PAGE_SIZE,
-      page: request.page,
-      sort: request.sort,
-      inStockProductsOnly: request.inStockOnly,
-    });
+    if (department !== undefined) await this.assertDepartmentExists(department);
+    return this.productQuery(
+      "/products?target=specials",
+      request.page,
+      request.sort,
+      {
+        target: "specials",
+        useRankedSpecials: true,
+        ...(department === undefined ? {} : { dasFilter: [`Department;;${department};false`] }),
+        size: request.size ?? DEFAULT_PAGE_SIZE,
+        page: request.page,
+        sort: request.sort,
+        inStockProductsOnly: request.inStockOnly,
+      },
+      request.inStockOnly,
+    );
   }
 
   /**
@@ -387,7 +421,13 @@ export class WoolworthsApi {
           );
     return {
       stores: matched,
-      ...toCoverage(matched.length, matched.length, 1, "pick-up locations", ""),
+      ...toCoverage({
+        returned: matched.length,
+        matchesAvailable: matched.length,
+        page: 1,
+        noun: "pick-up locations",
+        refinement: "search by name or suburb instead.",
+      }),
     };
   }
 
@@ -396,6 +436,7 @@ export class WoolworthsApi {
     page: number,
     sort: SortOption,
     query: Readonly<Record<string, QueryValue>>,
+    inStockOnly: boolean,
     path = "products",
   ): Promise<SearchResult> {
     const payload = await this.client.get(path, query);
@@ -415,7 +456,14 @@ export class WoolworthsApi {
     const coverage =
       mapped.length === 0 && page > 1 && matchesAvailable > 0
         ? toEmptyPageCoverage(page, matchesAvailable, "products")
-        : toCoverage(mapped.length, matchesAvailable, page, "products", REFINE_PRODUCTS);
+        : toCoverage({
+            returned: mapped.length,
+            matchesAvailable,
+            page,
+            noun: "products",
+            refinement: REFINE_PRODUCTS,
+            filteredToInStock: inStockOnly,
+          });
 
     return {
       ...coverage,
