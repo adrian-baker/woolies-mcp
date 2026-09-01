@@ -46,6 +46,7 @@ import {
   suburbsResponseSchema,
   trolleyResponseSchema,
   trolleyWriteResponseSchema,
+  type RawSearchResponse,
 } from "./schemas.js";
 
 /** The site's four sort keys, read from `sortOptions` in a live search response. */
@@ -68,6 +69,33 @@ export type PricingUnit = (typeof PRICING_UNITS)[number];
  * What a live account call demonstrated, kept separate from what `/shell` claims so a session
  * that satisfies one and not the other is visible rather than flattened into one boolean.
  */
+/**
+ * Fails when a requested browse level is missing from the response breadcrumb.
+ *
+ * The site ignores a level it does not recognise and returns the wider set anyway, so without
+ * this a whole department comes back labelled as one aisle. Validation against the tree should
+ * prevent it; this catches the case where the tree and the site disagree, which is possible
+ * because aisle slugs are derived rather than published.
+ */
+function assertNarrowed(
+  requested: CategoryFilter,
+  breadcrumb: RawSearchResponse["breadcrumb"],
+): void {
+  const applied: readonly [string, string | undefined, { name: string } | null | undefined][] = [
+    ["department", requested.department, breadcrumb?.department],
+    ["aisle", requested.aisle, breadcrumb?.aisle],
+    ["shelf", requested.shelf, breadcrumb?.shelf],
+  ];
+  for (const [level, asked, got] of applied) {
+    if (asked !== undefined && (got === null || got === undefined)) {
+      throw new UnknownCategoryError(
+        `The site ignored the ${level} '${asked}' and would have returned the wider set. ` +
+          "Its browse tree and this server's disagree; re-read list_categories.",
+      );
+    }
+  }
+}
+
 /** Raised when a category slug is not in the tree, instead of letting the site answer -1. */
 export class UnknownCategoryError extends Error {
   constructor(message: string) {
@@ -185,7 +213,7 @@ export interface SearchRequest extends ListingRequest, CategoryFilter {
   readonly query: string;
 }
 
-export interface BrowseRequest extends ListingRequest {
+export interface BrowseRequest extends ListingRequest, CategoryFilter {
   readonly department: string;
 }
 
@@ -327,41 +355,72 @@ export class WoolworthsApi {
   }
 
   /**
-   * Browses a department. Only the Department level of `dasFilter` narrows anything: Aisle and
-   * Shelf were verified inert, returning the whole department with a null aisle in the response
-   * breadcrumb, so they are not offered.
+   * Browses a department, aisle or shelf. Every level narrows, but only when the slug exists: an
+   * unrecognised one is ignored and the wider set comes back wearing the narrower label, so the
+   * slugs are checked against the tree first and the response breadcrumb is checked afterwards.
    */
   async browseCategory(request: BrowseRequest): Promise<SearchResult> {
-    await this.assertDepartmentExists(request.department);
+    await this.assertCategoryExists(request);
+    const levels = [`Department;;${request.department};false`];
+    if (request.aisle !== undefined) levels.push(`Aisle;;${request.aisle};false`);
+    if (request.shelf !== undefined) levels.push(`Shelf;;${request.shelf};false`);
+
     return this.productQuery(
       "/products?target=browse",
       request.page,
       request.sort,
       {
         target: "browse",
-        dasFilter: [`Department;;${request.department};false`],
+        dasFilter: levels,
         size: request.size ?? DEFAULT_PAGE_SIZE,
         page: request.page,
         sort: request.sort,
         inStockProductsOnly: request.inStockOnly,
       },
       request.inStockOnly,
+      "products",
+      request,
     );
   }
 
   /**
-   * An unknown slug makes the site answer `totalItems: -1` with no products, which reads as an
-   * empty category. Checking against the tree first turns a typo into an error naming the valid
-   * slugs, as `list_categories` already does.
+   * An unknown slug makes the site ignore that level, returning the wider set, or answer
+   * `totalItems: -1` for an unknown department. Checking against the tree first turns a typo into
+   * an error naming the valid slugs, as `list_categories` already does.
    */
-  private async assertDepartmentExists(slug: string): Promise<void> {
+  private async assertCategoryExists(filter: CategoryFilter): Promise<void> {
     const departments = await this.listCategories();
-    if (departments.some((department) => department.slug === slug)) return;
-    throw new UnknownCategoryError(
-      `No department with slug '${slug}'. Valid slugs: ${departments
-        .map((department) => department.slug)
-        .join(", ")}.`,
-    );
+    const department = departments.find((candidate) => candidate.slug === filter.department);
+    if (department === undefined) {
+      throw new UnknownCategoryError(
+        `No department with slug '${String(filter.department)}'. Valid slugs: ${departments
+          .map((candidate) => candidate.slug)
+          .join(", ")}.`,
+      );
+    }
+    if (filter.aisle === undefined) return;
+
+    const aisle = department.aisles.find((candidate) => candidate.slug === filter.aisle);
+    if (aisle === undefined) {
+      throw new UnknownCategoryError(
+        `No aisle '${filter.aisle}' in ${department.slug}. Valid aisles: ${department.aisles
+          .map((candidate) => candidate.slug)
+          .join(", ")}.`,
+      );
+    }
+    if (filter.shelf === undefined) return;
+
+    if (!aisle.shelves.some((candidate) => candidate.slug === filter.shelf)) {
+      throw new UnknownCategoryError(
+        `No shelf '${filter.shelf}' in ${department.slug}/${aisle.slug}. Valid shelves: ${aisle.shelves
+          .map((candidate) => candidate.slug)
+          .join(", ")}.`,
+      );
+    }
+  }
+
+  private async assertDepartmentExists(slug: string): Promise<void> {
+    await this.assertCategoryExists({ department: slug });
   }
 
   async getSpecials(request: SpecialsRequest): Promise<SearchResult> {
@@ -438,9 +497,11 @@ export class WoolworthsApi {
     query: Readonly<Record<string, QueryValue>>,
     inStockOnly: boolean,
     path = "products",
+    requested?: CategoryFilter,
   ): Promise<SearchResult> {
     const payload = await this.client.get(path, query);
     const parsed = parseResponse(searchResponseSchema, payload, endpoint);
+    if (requested !== undefined) assertNarrowed(requested, parsed.breadcrumb);
     const { products, skippedTypes, rejections } = partitionSearchItems(parsed.products.items);
 
     for (const rejection of rejections) {

@@ -77,18 +77,30 @@ export const sortOptionSchema = z.object({
   selected: z.boolean(),
 });
 
+const breadcrumbNodeSchema = z.object({ name: z.string(), value: nullableNumber }).nullish();
+
 export const searchResponseSchema = z.object({
   products: z.object({
     items: z.array(searchListItemSchema),
     totalItems: z.number(),
   }),
+  /**
+   * Which browse levels the site actually applied. A level it did not recognise comes back null
+   * while the products come back anyway, so this is what tells a narrowed result from a wider one
+   * wearing the wrong label.
+   */
+  breadcrumb: z
+    .object({
+      department: breadcrumbNodeSchema,
+      aisle: breadcrumbNodeSchema,
+      shelf: breadcrumbNodeSchema,
+    })
+    .nullish(),
   dasFacets: z.array(facetSchema),
   sortOptions: z.array(sortOptionSchema).nullish(),
   currentSortOption: nullableString,
 });
 export type RawSearchResponse = Readonly<z.infer<typeof searchResponseSchema>>;
-
-const breadcrumbNodeSchema = z.object({ name: z.string(), value: nullableNumber }).nullish();
 
 export const productDetailSchema = z.object({
   sku: z.string(),

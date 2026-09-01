@@ -8,7 +8,7 @@
  * Run with `npm run smoke`. Exits non-zero on the first failed check.
  */
 import { createWoolworthsApi } from "../src/server.js";
-import type { SearchResult } from "../src/woolworths/api.js";
+import type { SearchResult, WoolworthsApi } from "../src/woolworths/api.js";
 
 const SUBURB = "Ponsonby";
 const EXPECTED_SUBURB_ID = 102;
@@ -103,9 +103,20 @@ async function main(): Promise<void> {
   const beerWine = departments.find((department) => department.slug === "beer-wine");
   check("beer-wine department present", beerWine !== undefined, beerWine?.name ?? "(missing)");
 
-  console.log("\nbrowse_category(beer-wine)");
+  // A narrowing assertion must compare against the unnarrowed count. Checking only for a non-zero
+  // result passed while an ignored aisle silently returned the whole department.
+  console.log("\nbrowse_category(beer-wine) vs (beer-wine / red-wine / pinot-noir)");
+  const wholeDepartment = await api.browseCategory({
+    department: "beer-wine",
+    page: 1,
+    sort: "Relevance",
+    inStockOnly: true,
+    size: 1,
+  });
   const browsed = await api.browseCategory({
     department: "beer-wine",
+    aisle: "red-wine",
+    shelf: "pinot-noir",
     page: 1,
     sort: "PriceAsc",
     inStockOnly: true,
@@ -115,6 +126,16 @@ async function main(): Promise<void> {
     "shelf browse returned products",
     browsed.products.length > 0,
     `${browsed.products.length} items`,
+  );
+  check(
+    "the shelf filter actually narrowed",
+    browsed.matchesAvailable < wholeDepartment.matchesAvailable,
+    `${browsed.matchesAvailable} of the department's ${wholeDepartment.matchesAvailable}`,
+  );
+  check(
+    "an unknown aisle is refused, not silently widened",
+    await refused(api, { department: "beer-wine", aisle: "wine" }),
+    "'wine' is not an aisle in beer-wine",
   );
   console.log(`  cheapest: ${JSON.stringify(browsed.products[0])}`);
 
@@ -152,6 +173,19 @@ async function main(): Promise<void> {
   check("still at the set location", fulfilment.address.includes(SUBURB), fulfilment.address);
 
   reportAndExit();
+}
+
+/** True when the browse is rejected rather than answered with the wider set. */
+async function refused(
+  api: WoolworthsApi,
+  filter: { department: string; aisle: string },
+): Promise<boolean> {
+  try {
+    await api.browseCategory({ ...filter, page: 1, sort: "Relevance", inStockOnly: true, size: 1 });
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function describeFacet(results: SearchResult): string {

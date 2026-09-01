@@ -31,9 +31,8 @@ export function registerCatalogueTools(server: McpServer, api: WoolworthsApi): v
       title: "List Woolworths categories",
       description:
         "The browse tree. With no argument, lists the 13 departments and their slugs. With a " +
-        "department slug, lists that department's aisles and shelves. Only the department slugs " +
-        "are usable with browse_category: the site's browse filter ignores aisle and shelf. The " +
-        "aisle and shelf names are useful as search terms instead.",
+        "department slug, lists that department's aisles and shelves. Every slug it returns is " +
+        "usable with browse_category, at any level.",
       inputSchema: {
         department: z
           .string()
@@ -65,21 +64,36 @@ export function registerCatalogueTools(server: McpServer, api: WoolworthsApi): v
     {
       title: "Browse a Woolworths category",
       description:
-        "List the products in a department, using a department slug from list_categories. The " +
-        "site's browse filter only narrows to a department: aisle and shelf were verified inert, " +
-        "returning the whole department, so they are not offered. An unknown slug is an error " +
-        "rather than an empty result. Returns one page: read `coverage` before answering anything " +
-        `about the cheapest, the best, or whether something exists. ${LOCATION_CAVEAT}`,
+        "List the products in a department, aisle or shelf, using the slugs from " +
+        "list_categories. A narrower level needs the wider ones too. Every slug is checked " +
+        "against the tree, so a wrong one is an error naming the valid slugs rather than a " +
+        "silent whole-department result. Returns one page: read `coverage` before answering " +
+        `anything about the cheapest, the best, or whether something exists. ${LOCATION_CAVEAT}`,
       inputSchema: {
         department: z.string().min(1).describe("Department slug, e.g. 'beer-wine'. Required."),
+        aisle: z
+          .string()
+          .optional()
+          .describe("Aisle slug within the department, e.g. 'red-wine'. From list_categories."),
+        shelf: z
+          .string()
+          .optional()
+          .describe("Shelf slug within the aisle, e.g. 'pinot-noir'. From list_categories."),
         ...listingArguments,
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ department, page, sort, includeOutOfStock }) =>
+    async ({ department, aisle, shelf, page, sort, includeOutOfStock }) =>
       guarded("browse_category", async () =>
         jsonResult(
-          await api.browseCategory({ department, page, sort, inStockOnly: !includeOutOfStock }),
+          await api.browseCategory({
+            department,
+            ...(aisle === undefined ? {} : { aisle }),
+            ...(shelf === undefined ? {} : { shelf }),
+            page,
+            sort,
+            inStockOnly: !includeOutOfStock,
+          }),
         ),
       ),
   );
