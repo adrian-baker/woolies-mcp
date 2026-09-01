@@ -50,8 +50,14 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
     async () =>
       guarded("sign_in", async () => {
         const outcome = await api.signIn();
-        const status = await api.getAccountStatus();
-        return jsonResult({ outcome, signedIn: status.signedIn, firstName: status.firstName });
+        // Same demonstrated check as auth_status, so the two can never contradict each other.
+        const access = await api.checkAccountAccess();
+        return jsonResult({
+          outcome,
+          accountToolsUsable: access.usable,
+          shellReportsSignedIn: access.shellReportsSignedIn,
+          firstName: access.usable ? access.firstName : undefined,
+        });
       }),
   );
 
@@ -60,33 +66,38 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Woolworths sign-in status",
       description:
-        "Report whether this session is signed in to a Woolworths account. `signedIn` comes from " +
-        "a live call, so it is current. `cookieExpiresAt`, when present, is only the date the " +
-        "site stamped on the session cookie: an upper bound on how long the session can last, " +
-        "not a promise it will — a session can end sooner through a sign-out elsewhere, a " +
-        "password change or a security event. The only proof a session still works is a live " +
-        "call. The catalogue tools work signed out and are unaffected; the cart and " +
-        "purchase-history tools need a signed-in session.",
+        "Report whether the account tools will work, by making a real account call rather than " +
+        "inferring it. `accountToolsUsable` is demonstrated, not guessed: if it is true the cart " +
+        "and purchase-history tools work right now. `shellReportsSignedIn` is what the site's " +
+        "own session check claims, reported separately because a session can satisfy that while " +
+        "account access is already gone; when the two disagree, `note` says so and the demonstrated " +
+        "answer is the one to believe. `cookieExpiresAt`, when present, is only the date stamped " +
+        "on the session cookie: an upper bound, not a promise. The catalogue tools work signed " +
+        "out and are unaffected.",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async () =>
       guarded("auth_status", async () => {
-        // Read-only: reports the session as it stands and never triggers a sign-in attempt,
-        // so it is safe to call freely. Use sign_in to actually authenticate.
-        const status = await api.getAccountStatus();
-        // Only reported when signed in: a forward date beside signedIn:false claims a session
-        // that does not exist.
-        const cookieExpiry = status.signedIn ? await api.cookieExpiry() : undefined;
+        // Costs one account call. A status tool that guesses is worse than a status tool that
+        // asks, and this is the tool people check before trusting the others.
+        const access = await api.checkAccountAccess();
+        // Only reported when access is demonstrated: a forward date beside an unusable session
+        // describes a session that is already gone.
+        const cookieExpiry = access.usable ? await api.cookieExpiry() : undefined;
         return jsonResult({
-          signedIn: status.signedIn,
-          firstName: status.firstName,
-          accountToolsUsable: status.signedIn,
+          accountToolsUsable: access.usable,
+          shellReportsSignedIn: access.shellReportsSignedIn,
+          firstName: access.usable ? access.firstName : undefined,
           cookieExpiresAt: cookieExpiry?.toISOString(),
-          hint: status.signedIn
-            ? `Signed in now. ${describeCookieExpiry(cookieExpiry)} If any account tool reports ` +
-              "not signed in, the session ended early — run `npm run login` again."
-            : "Run `npm run login` to sign in; call sign_in for the details.",
+          note:
+            access.usable === access.shellReportsSignedIn
+              ? undefined
+              : "The site's session check and real account access disagree: the session is " +
+                "partly dead. Believe accountToolsUsable and run `npm run login` again.",
+          hint: access.usable
+            ? `Account tools work right now. ${describeCookieExpiry(cookieExpiry)}`
+            : "Account tools will fail. Run `npm run login` where the server runs.",
         });
       }),
   );

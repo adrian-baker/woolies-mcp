@@ -64,6 +64,16 @@ const UNAUTHORIZED = 401;
 export const PRICING_UNITS = ["Each", "Kg"] as const;
 export type PricingUnit = (typeof PRICING_UNITS)[number];
 
+/**
+ * What a live account call demonstrated, kept separate from what `/shell` claims so a session
+ * that satisfies one and not the other is visible rather than flattened into one boolean.
+ */
+export interface AccountAccess {
+  readonly usable: boolean;
+  readonly shellReportsSignedIn: boolean;
+  readonly firstName: string | undefined;
+}
+
 export type CartWriteOutcome =
   | { readonly kind: "written"; readonly result: CartWriteResult }
   | { readonly kind: "failed"; readonly sku: string; readonly reason: string };
@@ -253,6 +263,32 @@ export class WoolworthsApi {
   async importSession(cookies: readonly ImportedCookie[]): Promise<AccountStatus> {
     await this.client.shopperSession.importCookies(cookies);
     return this.getAccountStatus();
+  }
+
+  /**
+   * Whether the account tools will actually work, established by making an account call rather
+   * than by reading `/shell`.
+   *
+   * `/shell`'s `isLoggedIn` is a proxy and has been observed true while `trolleys/my` returned
+   * 401, so a status built on it can contradict the very tools it describes. The probe uses the
+   * trolley because that is the access the account tools need; any other endpoint would be a
+   * different proxy with the same failure mode.
+   */
+  async checkAccountAccess(): Promise<AccountAccess> {
+    const shell = await this.getAccountStatus();
+    try {
+      await this.accountGet("trolleys/my");
+      return { usable: true, shellReportsSignedIn: shell.signedIn, firstName: shell.firstName };
+    } catch (error: unknown) {
+      if (error instanceof NotSignedInError) {
+        return {
+          usable: false,
+          shellReportsSignedIn: shell.signedIn,
+          firstName: shell.firstName,
+        };
+      }
+      throw error;
+    }
   }
 
   /** The session cookie's stated `Expires` date: an upper bound, not proof the session works. */

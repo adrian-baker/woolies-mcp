@@ -25,4 +25,6 @@ jobs:
       # Deterministic checks: no network, no account.
       - run: npm run check:adjustment
       - run: npm run check:session-death
+      - run: npm run check:null-fields
+      - run: npm run check:split-session
       # The live smoke needs network and a signed-in account, so it stays out of CI.

@@ -174,8 +174,18 @@ is fatal rather than ignored.
 The shop session cookie `cw-lrkswrdjp` is dated 7 days ahead. That date is the site's claim about
 the cookie, an upper bound rather than a guarantee — a sign-out elsewhere, a password change or a
 security event ends the session earlier and the cookie keeps its original date. Only a live call
-proves a session, so `signedIn` comes from `context.shopper.isLoggedIn` in `/shell` and the cookie
-date is reported as `cookieExpiresAt`, and only while signed in.
+proves a session, so the cookie date is reported as `cookieExpiresAt` only while account access
+has been demonstrated.
+
+**`/shell` is not a sufficient sign-in check.** `context.shopper.isLoggedIn` has been observed
+reading true while `trolleys/my` returned 401 on the same server at the same moment: the shop
+session satisfies the storefront while API authorisation is already gone. Edge caching is not the
+cause — `/shell` and `trolleys/my` both answer `cache-control: no-cache` — but the mechanism is
+otherwise unconfirmed, most likely separate validations over the shop session cookie and the
+API's own authorisation. `auth_status` therefore makes a real account call and reports what it
+demonstrated, keeping the shell's claim beside it as `shellReportsSignedIn` so a half-dead session
+is visible. `requireSignedIn` still reads `/shell` as a cheap pre-check, with the 401 guard as the
+authority.
 
 ## Stack and deployment
 
