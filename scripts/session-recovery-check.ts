@@ -1,12 +1,13 @@
 /**
- * Guards the two ways a live request used to destroy a sign-in.
+ * Guards the two ways a live request can destroy a sign-in.
  *
- * `reset()` wiped the whole jar on any 400 or 403, discarding the authenticated `cw-*` cookies
- * along with the edge ones and leaving nothing to reload. Redirects after the first hop were
- * reissued as a bare GET, dropping the method, body and `x-requested-with`, which the API answers
- * 400 — which fed the first fault.
+ * A rejected request must not cost the jar: the authenticated `cw-*` cookies are the sign-in and
+ * nothing reloads them, so clearing them on a 400 or 403 signs the shopper out permanently.
+ * A 307 or 308 must keep the method, body and `x-requested-with`; reissued as a bare GET the
+ * site answers 400, which is the first fault again.
  *
- * Both are driven against a stubbed fetch, so this runs offline.
+ * Driven against a stubbed fetch, so this runs offline. The URLs are `/api/graphql`, the only
+ * endpoint the server calls.
  *
  * Run with `npm run check:session-recovery`.
  */
@@ -41,12 +42,12 @@ function stubFetch(redirectStatus: number | undefined): typeof globalThis.fetch 
       requestedWith: headers.get("x-requested-with"),
       body: typeof init?.body === "string" ? init.body : null,
     });
-    if (redirectStatus !== undefined && url.includes("/api/v1/") && !redirected) {
+    if (redirectStatus !== undefined && url.includes("/api/graphql") && !redirected) {
       redirected = true;
       return Promise.resolve(
         new Response(null, {
           status: redirectStatus,
-          headers: { location: "https://www.woolworths.co.nz/api/v1/moved" },
+          headers: { location: "https://www.woolworths.co.nz/api/graphql?moved=1" },
         }),
       );
     }
@@ -82,9 +83,9 @@ for (const status of [307, 308]) {
   seen.length = 0;
   const redirecting = new Session();
   globalThis.fetch = stubFetch(status);
-  await redirecting.fetch(new URL("https://www.woolworths.co.nz/api/v1/trolleys/my/items"), {
+  await redirecting.fetch(new URL("https://www.woolworths.co.nz/api/graphql"), {
     method: "POST",
-    body: JSON.stringify({ sku: "1", quantity: 1 }),
+    body: JSON.stringify({ query: "query CustomerCart { me { id } }" }),
     headers: { "x-requested-with": "OnlineShopping.WebApp" },
   });
   globalThis.fetch = realFetch;
@@ -107,7 +108,7 @@ for (const status of [307, 308]) {
 seen.length = 0;
 const seeOther = new Session();
 globalThis.fetch = stubFetch(302);
-await seeOther.fetch(new URL("https://www.woolworths.co.nz/api/v1/anything"), {
+await seeOther.fetch(new URL("https://www.woolworths.co.nz/api/graphql"), {
   method: "POST",
   body: "x",
 });

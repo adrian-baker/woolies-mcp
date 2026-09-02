@@ -7,7 +7,7 @@ import {
 } from "node:http";
 import { ConfigError, readHttpConfig, type HttpConfig } from "./config.js";
 import { createServer, createWoolworthsApi, SERVER_NAME, SERVER_VERSION } from "./server.js";
-import { SessionStore, restoreStoredSession } from "./session-store.js";
+import { SessionStore, defaultSessionFilePath, restoreStoredSession } from "./session-store.js";
 import type { WoolworthsApi } from "./woolworths/api.js";
 
 /**
@@ -79,28 +79,29 @@ async function handleSessionImport(
   }
 
   const body = await readBody(req);
-  const cookies = parseCookies(body);
-  if (cookies === undefined) {
+  const parsed = parseCookies(body);
+  if (typeof parsed === "string") {
     res
       .writeHead(400, { "content-type": "application/json" })
-      .end(JSON.stringify({ error: "expected { cookies: [{ setCookie, url }] }" }));
+      .end(JSON.stringify({ error: `expected { cookies: [{ setCookie, url }] }: ${parsed}` }));
     return;
   }
+  const cookies = parsed;
 
-  const status = await api.importSession(cookies);
-  const cookieExpiry = status.signedIn ? await api.cookieExpiry() : undefined;
-  // Stored only once the site confirms the handover worked, so a restart never restores junk.
-  if (status.signedIn) await store.save(cookies);
+  const access = await api.importSession(cookies);
+  const cookieExpiry = access.usable ? await api.cookieExpiry() : undefined;
+  // Stored only once an account call has actually worked, so a restart never restores junk.
+  if (access.usable) await store.save(cookies);
   console.error(
-    `[${SERVER_NAME}] session handover: ${cookies.length} cookies, signedIn=${status.signedIn}`,
+    `[${SERVER_NAME}] session handover: ${cookies.length} cookies, signedIn=${access.usable}`,
   );
   res.writeHead(200, { "content-type": "application/json" }).end(
     JSON.stringify({
       imported: cookies.length,
-      signedIn: status.signedIn,
+      signedIn: access.usable,
       // The cookie's stated ceiling, not a promise the session lasts that long.
       cookieExpiresAt: cookieExpiry?.toISOString(),
-      persisted: status.signedIn && store.isEnabled,
+      persisted: access.usable && store.isEnabled,
     }),
   );
 }
@@ -117,34 +118,54 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function parseCookies(body: string): readonly { setCookie: string; url: string }[] | undefined {
+/**
+ * The cookies, or a sentence saying what was wrong with the body.
+ *
+ * Four different malformations used to collapse into one `undefined`, which made a rejected
+ * handover impossible to diagnose from the response: the caller was told the expected shape but
+ * never which part of theirs failed.
+ */
+function parseCookies(body: string): readonly { setCookie: string; url: string }[] | string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
-  } catch {
-    return undefined;
+  } catch (error: unknown) {
+    return `body is not JSON (${error instanceof Error ? error.message : String(error)})`;
   }
-  if (typeof parsed !== "object" || parsed === null) return undefined;
+  if (typeof parsed !== "object" || parsed === null) {
+    return `body is ${JSON.stringify(parsed)}, not an object`;
+  }
   const list = (parsed as Record<string, unknown>)["cookies"];
-  if (!Array.isArray(list)) return undefined;
+  if (!Array.isArray(list)) {
+    return `"cookies" is ${list === undefined ? "missing" : "not an array"}`;
+  }
 
   const cookies: { setCookie: string; url: string }[] = [];
-  for (const entry of list) {
-    if (typeof entry !== "object" || entry === null) return undefined;
+  for (const [index, entry] of list.entries()) {
+    if (typeof entry !== "object" || entry === null) {
+      return `cookies[${index}] is ${JSON.stringify(entry)}, not an object`;
+    }
     const record = entry as Record<string, unknown>;
     const setCookie = record["setCookie"];
     const url = record["url"];
-    if (typeof setCookie !== "string" || typeof url !== "string") return undefined;
+    if (typeof setCookie !== "string" || typeof url !== "string") {
+      return `cookies[${index}] needs string setCookie and url; it carried ${Object.keys(record).join(", ")}`;
+    }
     cookies.push({ setCookie, url });
   }
   return cookies;
 }
 
-export function startHttpServer(config: HttpConfig): ReturnType<typeof createHttpServer> {
+export async function startHttpServer(
+  config: HttpConfig,
+): Promise<ReturnType<typeof createHttpServer>> {
   const mcpPath = `/mcp/${config.pathToken}`;
   const api = createWoolworthsApi();
-  const store = new SessionStore(process.env["WOOLIES_SESSION_FILE"]);
-  void restoreStoredSession(api, store, SERVER_NAME);
+  const store = new SessionStore(process.env["WOOLIES_SESSION_FILE"] ?? defaultSessionFilePath());
+  // Awaited before anything can be served. The restore costs two throttled round trips, and a
+  // tool call inside that window would answer as a guest — at a guest's store, with a guest's
+  // prices — without saying so.
+  await restoreStoredSession(api, store, SERVER_NAME);
 
   const httpServer = createHttpServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -202,9 +223,9 @@ function readConfigOrExit(): HttpConfig {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const config = readConfigOrExit();
-  const httpServer = startHttpServer(config);
+  const httpServer = await startHttpServer(config);
 
   let shuttingDown = false;
   const shutdown = (signal: NodeJS.Signals): void => {
@@ -219,4 +240,4 @@ function main(): void {
   process.on("SIGTERM", shutdown);
 }
 
-main();
+await main();

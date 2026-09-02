@@ -34,7 +34,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm run build && npm run check:adjustment && npm run check:session-death && npm run check:null-fields && npm run check:split-session && npm run check:coverage && npm run check:session-recovery",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run build && npm run check:adjustment && npm run check:session-death && npm run check:null-fields && npm run check:graphql-cart && npm run check:coverage && npm run check:session-recovery",
     "typecheck": "tsc -p tsconfig.check.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -46,18 +46,21 @@
     "deploy": "tsx scripts/deploy.ts",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:account": "tsx scripts/account-smoke.ts",
+    "probe:cart": "tsx scripts/cart-contract-probe.ts",
     "check:stdio": "tsx scripts/stdio-check.ts",
     "check:http": "tsx scripts/http-check.ts",
     "check:login": "tsx scripts/login-probe.ts",
     "check:adjustment": "tsx scripts/adjustment-check.ts",
     "check:session-death": "tsx scripts/session-death-check.ts",
     "check:null-fields": "tsx scripts/null-fields-check.ts",
-    "check:split-session": "tsx scripts/split-session-check.ts",
+    "check:graphql-cart": "tsx scripts/graphql-cart-check.ts",
     "check:coverage": "tsx scripts/coverage-check.ts",
     "check:session-recovery": "tsx scripts/session-recovery-check.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "graphql": "^16.14.2",
+    "graphql-request": "^7.4.0",
     "tough-cookie": "^6.0.2",
     "zod": "^4.5.4"
   },

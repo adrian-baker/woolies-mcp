@@ -15,7 +15,7 @@ interface Case {
   readonly appliedQuantity: number;
   readonly requestedPricingUnit: string;
   readonly appliedPricingUnit: string;
-  readonly averageWeightPerUnit: number | undefined;
+  readonly quantityIncrement: number | undefined;
   readonly expectAdjusted: boolean;
   readonly expectInNote: readonly string[];
 }
@@ -25,31 +25,31 @@ const cases: readonly Case[] = [
     name: "bananas 133211: 0.3 Kg requested, 0.5 Kg applied",
     requestedQuantity: 0.3,
     appliedQuantity: 0.5,
-    requestedPricingUnit: "Kg",
-    appliedPricingUnit: "Kg",
-    averageWeightPerUnit: undefined,
+    requestedPricingUnit: "KG",
+    appliedPricingUnit: "KG",
+    quantityIncrement: undefined,
     expectAdjusted: true,
-    expectInNote: ["applied 0.5 Kg", "not the 0.3 Kg requested", "minimum order quantity"],
+    expectInNote: ["applied 0.5 KG", "not the 0.3 KG requested", "minimum order quantity"],
   },
   {
-    // Live: bananas average 0.25 Kg each, so 0.3 Kg rounds up to 2 bananas = 0.5 Kg.
-    name: "bananas 133211 explained by its live 0.25 Kg average unit weight",
+    // Live: the site sells loose bananas in 0.25 Kg steps, so 0.3 Kg moves to 0.5 Kg.
+    name: "bananas 133211 explained by the 0.25 Kg step the site sells in",
     requestedQuantity: 0.3,
     appliedQuantity: 0.5,
-    requestedPricingUnit: "Kg",
-    appliedPricingUnit: "Kg",
-    averageWeightPerUnit: 0.25,
+    requestedPricingUnit: "KG",
+    appliedPricingUnit: "KG",
+    quantityIncrement: 0.25,
     expectAdjusted: true,
-    expectInNote: ["2 items", "average unit weight of 0.25", "rounded to whole items"],
+    expectInNote: ["sold in steps of 0.25", "nearest step"],
   },
   {
     // Live: limes average 0.1 Kg each, so 0.3 Kg is exactly 3 limes and needs no adjustment.
     name: "limes 245902: 0.3 Kg requested and applied",
     requestedQuantity: 0.3,
     appliedQuantity: 0.3,
-    requestedPricingUnit: "Kg",
-    appliedPricingUnit: "Kg",
-    averageWeightPerUnit: 0.1,
+    requestedPricingUnit: "KG",
+    appliedPricingUnit: "KG",
+    quantityIncrement: 0.1,
     expectAdjusted: false,
     expectInNote: [],
   },
@@ -57,9 +57,9 @@ const cases: readonly Case[] = [
     name: "counted item: 3 Each requested and applied",
     requestedQuantity: 3,
     appliedQuantity: 3,
-    requestedPricingUnit: "Each",
-    appliedPricingUnit: "Each",
-    averageWeightPerUnit: undefined,
+    requestedPricingUnit: "EACH",
+    appliedPricingUnit: "EACH",
+    quantityIncrement: undefined,
     expectAdjusted: false,
     expectInNote: [],
   },
@@ -68,9 +68,9 @@ const cases: readonly Case[] = [
     name: "removal of a Kg-priced line reports no adjustment",
     requestedQuantity: 0,
     appliedQuantity: 0,
-    requestedPricingUnit: "Each",
-    appliedPricingUnit: "Kg",
-    averageWeightPerUnit: undefined,
+    requestedPricingUnit: "EACH",
+    appliedPricingUnit: "KG",
+    quantityIncrement: undefined,
     expectAdjusted: false,
     expectInNote: [],
   },
@@ -78,31 +78,31 @@ const cases: readonly Case[] = [
     name: "removal the site did not honour is still reported",
     requestedQuantity: 0,
     appliedQuantity: 0.5,
-    requestedPricingUnit: "Each",
-    appliedPricingUnit: "Kg",
-    averageWeightPerUnit: undefined,
+    requestedPricingUnit: "EACH",
+    appliedPricingUnit: "KG",
+    quantityIncrement: undefined,
     expectAdjusted: true,
-    expectInNote: ["applied 0.5 Kg", "what is actually left on the line"],
+    expectInNote: ["applied 0.5 KG", "what is actually left on the line"],
   },
   {
     name: "site overrides the pricing unit",
     requestedQuantity: 1,
     appliedQuantity: 1,
-    requestedPricingUnit: "Each",
-    appliedPricingUnit: "Kg",
-    averageWeightPerUnit: undefined,
+    requestedPricingUnit: "EACH",
+    appliedPricingUnit: "KG",
+    quantityIncrement: undefined,
     expectAdjusted: true,
-    expectInNote: ["priced this line as Kg", "not the Each requested"],
+    expectInNote: ["priced this line as KG", "not the EACH requested"],
   },
   {
     name: "site lowers the quantity",
     requestedQuantity: 10,
     appliedQuantity: 4,
-    requestedPricingUnit: "Each",
-    appliedPricingUnit: "Each",
-    averageWeightPerUnit: undefined,
+    requestedPricingUnit: "EACH",
+    appliedPricingUnit: "EACH",
+    quantityIncrement: undefined,
     expectAdjusted: true,
-    expectInNote: ["applied 4 Each", "lowered it"],
+    expectInNote: ["applied 4 EACH", "lowered it"],
   },
 ];
 
@@ -114,7 +114,7 @@ for (const testCase of cases) {
     testCase.appliedQuantity,
     testCase.requestedPricingUnit,
     testCase.appliedPricingUnit,
-    testCase.averageWeightPerUnit,
+    testCase.quantityIncrement,
   );
   const note = result.note ?? "";
   const missing = testCase.expectInNote.filter((fragment) => !note.includes(fragment));

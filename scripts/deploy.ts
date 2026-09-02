@@ -36,6 +36,14 @@ function resolveHost(): string {
 async function main(): Promise<void> {
   await assertCleanTree();
 
+  step("Clearing the previous source");
+  // `tar -x` writes over the top and never removes anything, so a file deleted in HEAD survives
+  // on the target and is still compiled there. Everything git owns goes first; `.env` and the
+  // signed-in session under `data/` are the only state and are kept.
+  await ssh(
+    `cd '${REMOTE_DIR}' && find . -mindepth 1 -maxdepth 1 ! -name .env ! -name data -exec rm -rf {} +`,
+  );
+
   step("Shipping HEAD");
   await pipeline(
     ["git", ["archive", "--format=tar", "HEAD"]],

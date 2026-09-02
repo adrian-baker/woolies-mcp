@@ -1,12 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { SORT_OPTIONS, type WoolworthsApi } from "../woolworths/api.js";
-import { guarded, jsonResult } from "./respond.js";
+import { errorResult, guarded, jsonResult } from "./respond.js";
 import { skuArgument } from "./arguments.js";
 
 const LOCATION_CAVEAT =
-  "Prices and availability are per delivery location; call get_location to see the current one " +
-  "and set_location to change it.";
+  "Prices and availability are per delivery location; call get_location to see the current one, " +
+  "and set_location to move the cart to another of the account's saved addresses.";
 
 export function registerProductTools(server: McpServer, api: WoolworthsApi): void {
   server.registerTool(
@@ -30,38 +30,29 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
           .describe("1-based page of results; 40 products per page."),
         sort: z
           .enum(SORT_OPTIONS)
-          .default("Relevance")
+          .default("RELEVANCE")
           .describe(
-            "Result order. CUPAsc uses the site's raw cup price, whose measure varies per " +
-              "product ($/L, $/100g, $/1ea), so it ranks meaningfully only within one category " +
-              "and is absent for many products.",
-          ),
-        includeOutOfStock: z
-          .boolean()
-          .default(false)
-          .describe(
-            "Include products that cannot be bought at the current location. Off by default: " +
-              "an unbuyable product is not a useful answer.",
+            "Result order. FAVOURITES was observed to change the order only on get_specials; on search and browse it returns the same order as RELEVANCE.",
           ),
         department: z
           .string()
           .optional()
           .describe(
-            "Department slug to keep only products from, e.g. 'fruit-veg'. Applied to the fetched " +
-              "page after the search runs, because the site's search does not accept a category " +
-              "filter; the coverage sentence says how much was actually examined.",
+            "Department slug to keep only products from, e.g. 'fruit-veg'. Applied to this page " +
+              "after the search runs, because the site's search accepts no category filter, so " +
+              "it narrows one page rather than the query. `departmentFilter` reports how many " +
+              "were examined, how many matched, and which department slugs the page held.",
           ),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ query, page, sort, includeOutOfStock, department }) =>
+    async ({ query, page, sort, department }) =>
       guarded("search_products", async () =>
         jsonResult(
           await api.searchProducts({
             query,
             page,
             sort,
-            inStockOnly: !includeOutOfStock,
             ...(department === undefined ? {} : { department }),
           }),
         ),
@@ -73,27 +64,62 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Get a product's label photo",
       description:
-        "Return the product's packaging photo as an image, for reading details the API does not " +
-        "publish — most importantly ingredients and allergens, which are frequently absent from " +
-        "get_product. Call this when get_product reports allergens or ingredients as 'notStated' " +
-        "and the answer matters. Images are token-expensive, so request them one product at a " +
-        "time and only when needed. A photo may still not show the panel, and reading a label " +
-        "from a photo is not a substitute for the physical packaging for allergy decisions.",
+        "Fetch the product's packaging photograph and return it as an image, for reading details " +
+        "the API does not publish — most importantly ingredients and allergens, which are " +
+        "frequently absent from get_product. Call this when get_product reports allergens or " +
+        "ingredients as 'notStated' and the answer matters. Images are token-expensive, so " +
+        "request them one product at a time and only when needed. `image` selects which of the " +
+        "product's photographs to fetch, 0-based; get_product's `images` lists them all, and the " +
+        "packaging panel is rarely the first. A photo may still not show the panel, and reading " +
+        "a label from a photo is not a substitute for the physical packaging for allergy " +
+        "decisions.",
       inputSchema: {
         sku: skuArgument("Woolworths product SKU."),
+        image: z
+          .number()
+          .int()
+          .min(0)
+          .default(0)
+          .describe("Which of the product's photographs to fetch, 0-based."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ sku }) =>
+    async ({ sku, image }) =>
       guarded("get_product_label", async () => {
-        const image = await api.getProductImage(sku);
+        const detail = await api.getProduct(sku);
+        const asset = detail.images[image];
+        if (asset === undefined) {
+          return errorResult(
+            detail.images.length === 0
+              ? `Woolworths publishes no image for ${detail.name} (${detail.sku}).`
+              : `${detail.name} (${detail.sku}) has ${detail.images.length} image(s), numbered 0 ` +
+                  `to ${detail.images.length - 1}; ${image} is not one of them.`,
+          );
+        }
+        const fetched = await api.fetchImage(asset.url);
         return {
           content: [
             {
-              type: "image" as const,
-              data: Buffer.from(image.bytes).toString("base64"),
-              mimeType: image.mimeType,
+              type: "text",
+              text: JSON.stringify(
+                {
+                  sku: detail.sku,
+                  name: detail.name,
+                  image,
+                  imagesAvailable: detail.images.length,
+                  url: asset.url,
+                  altText: asset.altText,
+                  note:
+                    "This is one of the product's own photographs. Whether it shows the " +
+                    "ingredients or allergen panel is not stated; if it does not, try another " +
+                    "index. Reading a label from a photo is not a substitute for the physical " +
+                    "packaging for an allergy decision.",
+                },
+                null,
+                2,
+              ),
             },
+            { type: "image", data: fetched.base64, mimeType: fetched.mimeType },
           ],
         };
       }),
@@ -104,8 +130,10 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Search several things at once",
       description:
-        "Run several catalogue searches in one call and get the results grouped by query, so " +
-        "finding many products costs one round trip. Every group carries its own `coverage` " +
+        "Run several catalogue searches in one call and get the results grouped by query. It is " +
+        "genuinely one request — the queries are sent together and answered together — so 20 " +
+        "searches take about as long as one. Groups come back in the order asked. Every group " +
+        "carries its own `coverage` " +
         "sentence and the same caveats as search_products: the ranking pads results, extra query " +
         "words are ANDed, and a truncated group cannot answer cheapest/only/none questions. " +
         LOCATION_CAVEAT,
@@ -122,20 +150,16 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
           .max(20)
           .default(5)
           .describe("How many top candidates to return per query."),
-        includeOutOfStock: z.boolean().default(false).describe("Include unbuyable products."),
-        department: z.string().optional().describe("Restrict every query to this department slug."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ queries, resultsPerQuery, includeOutOfStock, department }) =>
+    async ({ queries, resultsPerQuery }) =>
       guarded("search_products_batch", async () =>
         jsonResult({
           results: await api.searchMany(queries, {
             page: 1,
-            sort: "Relevance",
-            inStockOnly: !includeOutOfStock,
+            sort: "RELEVANCE",
             size: resultsPerQuery,
-            ...(department === undefined ? {} : { department }),
           }),
         }),
       ),
@@ -149,8 +173,8 @@ export function registerProductTools(server: McpServer, api: WoolworthsApi): voi
         "Fetch one product by SKU, with its price, size, unit price (a formatted string whose " +
         "measure varies per product, and absent for many), availability, category " +
         "breadcrumb, description, ingredients, allergens, claims, nutrition, origins and health " +
-        "star rating. `purchasingUnit` ('Each' or 'Kg') is what the cart tools need for " +
-        "pricingUnit, and `canBuyByWeight` says whether 'Kg' with a decimal quantity is allowed. " +
+        "star rating. `purchasingUnit` ('EACH' or 'KG') is what the cart tools need for " +
+        "pricingUnit, and `canBuyByWeight` says whether 'KG' with a decimal quantity is allowed. " +
         "IMPORTANT: allergens and ingredients are often not published. When either reports " +
         "status 'notStated' that means Woolworths said nothing, NOT that the product is free of " +
         "allergens — products whose own ingredients are milk come back with allergens empty. " +

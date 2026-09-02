@@ -32,7 +32,7 @@ Rules, in order of precedence:
    `ingredients`, `claims` (e.g. "Intensity: 3" on olive oil), `nutrition` and `origins`.
 3. **When purpose is unknown, pick and say so.** "Chose Vivaldi; if these are for roasting, Agria
    is better." Never make a silent judgement call on a purpose-sensitive item.
-4. **Repeat staples come from history.** `get_past_purchases` for things like toilet paper or
+4. **Repeat staples come from history.** `get_buy_it_again` for things like toilet paper or
    coffee. Use only the purchase-history section; the promotional section is Woolworths
    advertising, not anything this person has bought. It returns a general list rather than
    answering a query, so read it for the item you want rather than expecting a filtered result.

@@ -2,54 +2,13 @@
  * Guards the completeness claim, which is the strongest statement this server makes and the one
  * that had no offline cover.
  *
- * Each case is a payload observed live. `-1` is what the site returns for a category slug it
- * cannot resolve; the off-by-one is recorded in DESIGN; the emptied-by-filter case is a real
- * `browse_category` result.
+ * Each case is a payload observed live. The counts the GraphQL catalogue returns are guarded
+ * here too: `pageSize` echoes the rows returned rather than the size asked for, and `currentPage`
+ * reads -1 on an empty result, so neither describes a page.
  *
  * Run with `npm run check:coverage`.
  */
-import { toCoverage, toEmptyPageCoverage } from "../src/woolworths/mappers.js";
-import { UnknownCategoryError, WoolworthsApi } from "../src/woolworths/api.js";
-import { Authenticator } from "../src/woolworths/auth.js";
-import { WoolworthsClient } from "../src/woolworths/client.js";
-import { Session } from "../src/woolworths/session.js";
-
-const DEPARTMENTS = [
-  {
-    id: 8,
-    label: "Beer & Wine",
-    url: "beer-wine",
-    dasFacets: [
-      { key: "8", value: "140", name: "Red Wine", productCount: 401, shelfResponses: [] },
-      { key: "8", value: "141", name: "Ignored By The Site", productCount: 1, shelfResponses: [] },
-    ],
-  },
-];
-
-/** Applies a level only when the tree knows it, exactly as the site does. */
-class BrowseClient extends WoolworthsClient {
-  constructor() {
-    super(new Session(), {});
-  }
-
-  override get(path: string, query: Readonly<Record<string, unknown>> = {}): Promise<unknown> {
-    if (path === "products/departments") return Promise.resolve(DEPARTMENTS);
-    const filters = (query["dasFilter"] as readonly string[] | undefined) ?? [];
-    const askedAisle = filters.some((f) => f.startsWith("Aisle;;"));
-    const applied = filters.some((f) => f.startsWith("Aisle;;red-wine;"));
-    return Promise.resolve({
-      products: { items: [], totalItems: applied ? 401 : 1323 },
-      breadcrumb: {
-        department: { name: "Beer & Wine", value: 8 },
-        aisle: applied ? { name: "Red Wine", value: 140 } : null,
-        shelf: null,
-      },
-      dasFacets: [],
-      currentSortOption: "Relevance",
-      ...(askedAisle ? {} : {}),
-    });
-  }
-}
+import { toCoverage, toEmptyPageCoverage, toProductGrid } from "../src/woolworths/mappers.js";
 
 const failures: string[] = [];
 
@@ -134,40 +93,26 @@ check(
   pastEnd.coverage.slice(0, 66),
 );
 
-// --- a browse level the site ignored must never pass as the narrower set ---------------------
-// Live: an aisle slug that does not exist returns the whole department with a null breadcrumb.
-const api = new WoolworthsApi(new BrowseClient(), new Authenticator());
-
-const applied = await api
-  .browseCategory({
-    department: "beer-wine",
-    aisle: "red-wine",
-    page: 1,
-    sort: "Relevance",
-    inStockOnly: false,
-  })
-  .then(
-    (result) => `narrowed to ${result.matchesAvailable}`,
-    (error: unknown) => `threw: ${(error as Error).message.slice(0, 44)}`,
-  );
-check("a level the site applied is returned", applied.startsWith("narrowed"), applied);
-
-const ignored: unknown = await api
-  .browseCategory({
-    department: "beer-wine",
-    aisle: "ignored-by-the-site",
-    page: 1,
-    sort: "Relevance",
-    inStockOnly: false,
-  })
-  .then(
-    () => undefined,
-    (error: unknown) => error,
-  );
+// The GraphQL page envelope reports two counts that do not mean what they are named, so neither
+// is used to describe a page. Guarded here because reading either would silently misreport.
+const grid = toProductGrid({
+  totalCount: 116,
+  // The site echoes how many rows it returned, not the size asked for.
+  pageSize: 38,
+  totalPages: 4,
+  // A sentinel on an empty result, never a page number.
+  currentPage: -1,
+  results: [{ __typename: "GamResultItem" }, { __typename: "ContentInGridResultItem" }],
+});
 check(
-  "a level the site ignored is refused, not returned as the aisle",
-  ignored instanceof UnknownCategoryError,
-  ignored instanceof Error ? ignored.message.slice(0, 72) : "returned the wider set",
+  "advertising in the grid is excluded from the products",
+  grid.products.length === 0 && grid.advertisingExcluded === 2,
+  `${grid.products.length} products, ${grid.advertisingExcluded} tiles`,
+);
+check(
+  "a grid of nothing but advertising rejects nothing",
+  grid.rejections.length === 0,
+  grid.rejections.join("; ") || "(none)",
 );
 
 console.log(

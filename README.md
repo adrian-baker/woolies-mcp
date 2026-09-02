@@ -33,40 +33,51 @@ This is an unofficial project, not affiliated with Woolworths — please read
 
 | Tool                                                                    | What it does                                                                                                                                                                 |
 | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `search_products(query, page?, sort?, department?, includeOutOfStock?)` | Keyword search. Returns compact products, `matchesAvailable`, a coverage line, and category counts carrying browse slugs. In-stock only unless asked otherwise; 40 per page. |
-| `search_products_batch(queries, resultsPerQuery?, department?)`         | Several searches in one call, grouped by query.                                                                                                                              |
-| `get_product(sku)`                                                      | One product by SKU: breadcrumb, description, ingredients, claims, nutrition, origins, purchasing unit.                                                                       |
-| `get_product_label(sku)`                                                | The packaging photo, as an image block, for when the label is the only source.                                                                                               |
-| `get_location()`                                                        | The suburb, fulfilment method and store the session is shopping from.                                                                                                        |
-| `set_location(suburb)`                                                  | Switches to a New Zealand suburb. An ambiguous name returns the matches instead of guessing.                                                                                 |
-| `list_categories(department?)`                                          | The browse tree: departments, or one department's aisles and shelves.                                                                                                        |
-| `browse_category(department, aisle?, shelf?, page?, sort?)`             | Products in a category, by the slugs `list_categories` returns.                                                                                                              |
-| `get_specials(department?, page?, sort?)`                               | What is on special, optionally in one department.                                                                                                                            |
-| `find_stores(query?)`                                                   | Pick-up locations by name or address fragment, one row per store with its regions.                                                                                           |
+| `search_products(query, page?, sort?)`                                  | Keyword search. Returns products with the `variantKey` a cart write targets, `matchesAvailable` and a coverage line.                                                          |
+| `search_products_batch(queries, resultsPerQuery?)`                      | Several searches in one call, grouped by query.                                                                                                                              |
+| `get_product(sku)`                                                      | One product by SKU: ingredients, allergens, nutrition panels, warnings, barcode, and every way it is sold.                                                                    |
+| `get_product_label(sku)`                                                | The product's own image URLs. The site does not say which, if any, shows the label.                                                                                          |
+| `get_location()`                                                        | Where the cart is being delivered, and the account's other saved addresses.                                                                                                  |
+| `list_categories(categoryKey?)`                                         | The browse tree: one node with its children. Each carries the key `browse_category` takes.                                                                                   |
+| `browse_category(categoryKey, page?, sort?)`                            | Products in a category, by the key `list_categories` returns.                                                                                                                |
+| `get_specials(filters?, page?, sort?)`                                  | What is on special, optionally narrowed to one promotion type.                                                                                                               |
+| `get_delivery_windows(locationId?, availableOnly?)`                     | Delivery and pick-up windows with their fee bands. Read-only: no tool books one.                                                                                             |
+| `find_stores(query?)`                                                   | Pick-up locations nearest the cart's delivery address, with how far away each is.                                                                                            |
+
+| `set_location(addressId)`                                               | Moves the cart to another of the account's saved addresses. Books nothing.                                                                                                   |
 
 ### Account tools
 
 | Tool                                            | What it does                                                                    |
 | ----------------------------------------------- | ------------------------------------------------------------------------------- |
-| `auth_status()`                                 | Whether the session is signed in, and until when. Read-only.                    |
+| `auth_status()`                                 | Whether the account tools work, demonstrated by a real call. Read-only.         |
 | `sign_in()`                                     | Reports how to sign in; the server cannot do it unattended (see below).         |
-| `get_cart()`                                    | What is in the trolley, with the trolley total.                                 |
+| `get_cart()`                                    | What is in the cart, with the totals and anything blocking checkout.            |
 | `set_cart_quantity(sku, quantity, pricingUnit)` | Sets a line to an absolute quantity; 0 removes it. Decimals for `Kg`.           |
 | `set_cart_quantities(items)`                    | Several lines in one call, with a per-item outcome.                             |
-| `remove_from_cart(sku, pricingUnit?)`           | Removes a line.                                                                 |
-| `get_past_purchases()`                          | Purchase history, returned separately from Woolworths' promotional suggestions. |
-| `get_order_history()`                           | Past orders, for the site's default recent window.                              |
+| `remove_from_cart(sku)`                         | Removes a product from the cart, whichever pricing it is held under.            |
+| `get_buy_it_again(page?)`                       | The site's "Buy it again" list, frequency-ordered. Not the full purchase history. |
+| `get_order_history(filter?, page?)`             | Past or in-flight orders, with their fulfilment slots and totals.               |
 
 Sign-in happens in a real browser. Auth0 challenges non-browser clients with a captcha, so
 `npm run login` opens a window, you sign in, and the captured session is handed to the server,
 which persists it and reloads it at boot. The session cookie is dated 7 days ahead, which is the
 longest it can last rather than a guarantee: signing out elsewhere, a password change or a
-security event ends it sooner. `auth_status` makes a real account call and reports
-`accountToolsUsable` from what it demonstrated, so it cannot claim access the cart tools do not
-have.
+security event ends it sooner. `auth_status` makes real account calls and reports what it
+demonstrated, so it cannot claim access the tools do not have.
+
+Woolworths is moving the site from its old REST API to a new GraphQL one. This server has followed
+it completely: every call it makes is GraphQL. The catalogue still works without an account — the
+site serves a guest — so search, browse, specials and product detail need no sign-in. Everything
+about *your* shop does: the cart, where it goes, the windows offered there, and your history.
+
+> **An expired session does not make the cart look empty.** The new API answers an
+> unauthenticated caller with an empty *guest* cart at HTTP 200 rather than an error. Every cart
+> call here proves whose cart it is on the same request, so an empty cart these tools report is
+> genuinely empty.
 
 **No checkout, ever.** There is no tool for placing an order, paying, or booking a delivery slot,
-and the upstream endpoints for those are deliberately left unbound. A person reviews the trolley
+and the upstream endpoints for those are deliberately left unbound. A person reviews the cart
 and places the order on the website.
 
 > **Quantities can change on the way in.** Woolworths rounds weight-priced products up to a whole
@@ -74,9 +85,10 @@ and places the order on the website.
 > `requestedQuantity` and `appliedQuantity` separately and set `adjusted` with an explanation
 > when they differ. Report what was applied, never what was asked for.
 
-`npm run smoke:account` runs the cart sequence and restores the trolley; `npm run check:login`
-checks the sign-in chain without credentials; `npm run check:adjustment` checks the
-quantity-adjustment wording offline.
+`npm run smoke:account` runs the cart sequence and restores the cart; `npm run check:login`
+checks the sign-in chain without credentials; `npm run check:adjustment` and
+`npm run check:graphql-cart` check the quantity-adjustment wording and the GraphQL cart contract
+offline.
 
 ## Requirements
 
@@ -234,7 +246,9 @@ src/
   tools/                MCP adapters: argument schemas, descriptions, JSON responses
   woolworths/
     session.ts          cookie jar, browser headers, bootstrap
-    client.ts           throttle, retry, re-bootstrap, JSON
+    graphql-client.ts   the client, the session upgrade, and errors as exceptions
+    graphql-documents.ts the operations sent, and the variant-key encoding
+    graphql-cart.ts     every operation, with the guest-cart and wrong-cart guards
     auth.ts             sign-in state; the handover itself is scripts/login.ts
     schemas.ts          zod schemas for the site's payloads
     mappers.ts          raw JSON to the compact shapes a client sees
@@ -243,6 +257,8 @@ scripts/
   login.ts              browser sign-in handover
   smoke.ts              live catalogue check
   account-smoke.ts      live cart check, signed in
+  browser-fetch.ts      a fetch backed by a real browser's cookies, for the sign-in probes
+  cart-fixtures.ts      canned GraphQL carts, so the offline checks stay offline
   deploy.ts             ship, build and start on a remote host
 ```
 

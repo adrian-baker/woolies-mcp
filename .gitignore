@@ -14,3 +14,7 @@ dist/
 # Signed-in cookie jar. Never commit: grants full account access.
 session.json
 data/
+
+# Captured browser traffic. Never commit: HAR files carry the session cookies and the
+# account's own addresses and orders.
+*.har

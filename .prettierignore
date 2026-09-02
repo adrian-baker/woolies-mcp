@@ -5,3 +5,6 @@ session.json
 
 # Hand-maintained prose and tables; Prettier repads tables and churns every edit.
 *.md
+
+# Captured browser traffic, kept locally.
+*.har

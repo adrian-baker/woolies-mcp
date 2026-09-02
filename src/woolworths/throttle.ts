@@ -23,7 +23,9 @@ export class Throttle {
       return task();
     });
     // The chain must not break on a failed task, so the tail swallows the rejection that the
-    // caller already receives through `queued`.
+    // caller already receives through `queued`. Nothing reads this value; it exists to keep the
+    // queue running, and the failure reaches the caller in full.
+    // eslint-disable-next-line no-restricted-syntax -- the rejection is delivered via `queued`.
     this.tail = queued.catch(() => undefined);
     return queued;
   }

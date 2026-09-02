@@ -20,7 +20,7 @@ const HANDOVER_DETAIL =
   "deployed: it opens a real browser at the Woolworths login page, waits for you to sign in, " +
   "and hands the resulting session to the server. The server never sees your password. " +
   "Credentials cannot be supplied here — Auth0 challenges non-browser sign-ins, and attempts " +
-  "count against the account. The catalogue tools need no account and are unaffected.";
+  "count against the account. Log in again — every tool needs the session.";
 
 export class Authenticator {
   /** Reports the session state. Makes no request, so no account is ever touched. */

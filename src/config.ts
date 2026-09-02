@@ -9,8 +9,9 @@ export interface HttpConfig {
   readonly port: number;
   /**
    * The unguessable path segment: MCP is served only at `/mcp/<pathToken>`, and every other
-   * path 404s. This is obscurity, not authentication — it keeps the endpoint out of scanners,
-   * and the server behind it stays read-only for anonymous callers.
+   * path 404s. This is obscurity, not authentication, and it is the only thing protecting the
+   * account: the server holds a signed-in session, so whoever reaches this URL shops as the
+   * shopper — reading their orders and writing to their cart. Treat the token as a credential.
    */
   readonly pathToken: string;
 }

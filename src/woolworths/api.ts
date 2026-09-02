@@ -1,113 +1,139 @@
-import { Authenticator, NotSignedInError, type SignInOutcome } from "./auth.js";
-import { WoolworthsApiError, WoolworthsClient, type QueryValue } from "./client.js";
+import { Authenticator, type SignInOutcome } from "./auth.js";
+import { GraphQlCart, UnknownProductError, type CartWriteFacts } from "./graphql-cart.js";
+import { multiSearchAlias } from "./graphql-documents.js";
+import { GraphQlError, SessionGraphQlTransport } from "./graphql-client.js";
+import type { Session } from "./session.js";
+import { Throttle } from "./throttle.js";
+import {
+  categorySearchVariables,
+  keywordSearchVariables,
+  specialsVariables,
+  ORDER_FILTERS,
+  PRODUCT_SORTS,
+  SPECIAL_FILTERS,
+  PRICING_UNITS,
+  type DeliveryWindowsVariables,
+  type OrderFilter,
+  type PricingUnit,
+  type ProductSearchVariables,
+  type ProductSort,
+} from "./graphql-documents.js";
 import type { ImportedCookie } from "./session.js";
 import {
-  buildCategoryIndex,
-  toCartLines,
-  partitionSearchItems,
-  toAccountStatus,
-  toCategoryCounts,
-  toCompactProduct,
-  toDepartment,
   toFulfilment,
-  toProductDetail,
-  toStores,
-  type AccountStatus,
+  type CatalogueProduct,
   type Cart,
-  slugify,
-  optionalText,
+  type DeliveryWindows,
+  type CategoryNode,
+  type ProductDetail,
+  type SavedAddress,
+  type Store,
+  type CartValidationFailure,
   toCartAdjustment,
-  toCartTotals,
+  toCategoryNode,
+  toProductDetail,
+  toProductGrid,
+  toStore,
+  toDeliveryWindows,
+  toSavedAddresses,
   toOrderHistory,
+  toPurchaseHistory,
   toCoverage,
-  toEmptyPageCoverage,
-  toPurchaseSection,
-  type CategoryCount,
-  type CategoryIndex,
+  toPastPurchases,
   type Coverage,
   type OrderHistory,
-  type PurchaseSection,
-  type CompactProduct,
-  type Department,
+  type PurchaseHistory,
+  type PastPurchases,
   type Fulfilment,
-  type ProductDetail,
-  type Store,
 } from "./mappers.js";
-import {
-  departmentsResponseSchema,
-  fulfilmentContextSchema,
-  parseResponse,
-  pastOrdersResponseSchema,
-  pickupAddressesResponseSchema,
-  forgottenProductsResponseSchema,
-  productDetailSchema,
-  searchResponseSchema,
-  shopperContextSchema,
-  suburbsResponseSchema,
-  trolleyResponseSchema,
-  trolleyWriteResponseSchema,
-  type RawSearchResponse,
-} from "./schemas.js";
+import { detailVariantSchema, type RawDetailVariant, type RawProductPage } from "./schemas.js";
 
-/** The site's four sort keys, read from `sortOptions` in a live search response. */
-export const SORT_OPTIONS = ["Relevance", "PriceAsc", "PriceDesc", "CUPAsc"] as const;
+export { PRODUCT_SORTS, SPECIAL_FILTERS };
+export type { ProductSort };
+
+/** Kept as the tools' argument name; the values are the site's own sort enum. */
+/**
+ * The sorts a catalogue tool may be asked for.
+ *
+ * `FREQUENCY` is not among them: the site rejects it on keyword search, category browse and
+ * specials alike with `invalid input value at $searchInput`, so offering it is offering a value
+ * that can only ever fail. It remains valid on the personal "Buy it again" list, which sends it
+ * itself. `FAVOURITES` is accepted everywhere but was observed to change the order only on
+ * specials.
+ */
+export const SORT_OPTIONS = ["RELEVANCE", "FAVOURITES"] as const;
 export type SortOption = (typeof SORT_OPTIONS)[number];
 
 export const DEFAULT_PAGE_SIZE = 40;
 
+/**
+ * How many orders to ask for. The site ignores `pageIndex`, so this is the whole history it will
+ * hand over in one response; anything beyond it is reported as unreachable rather than paged for.
+ */
+const ORDER_PAGE_SIZE = 100;
+
+/**
+ * How many fulfilment windows to list. The site answers a delivery address with every pick-up
+ * slot at the nearest store too — 306 windows, 139 KB, observed — which no caller can read.
+ */
+const DEFAULT_WINDOW_LIMIT = 40;
+
 /** Long enough to cover a burst of cart writes, short enough that a dropped session surfaces fast. */
 const SIGNED_IN_TTL_MS = 60_000;
 
-/** What every account endpoint returns once the session is no longer honoured. */
-const UNAUTHORIZED = 401;
-
-/** How a line is priced. Captured traffic sends exactly these two values. */
-export const PRICING_UNITS = ["Each", "Kg"] as const;
-export type PricingUnit = (typeof PRICING_UNITS)[number];
+export { PRICING_UNITS, ORDER_FILTERS };
+export type { PricingUnit, OrderFilter };
 
 /**
- * What a live account call demonstrated, kept separate from what `/shell` claims so a session
- * that satisfies one and not the other is visible rather than flattened into one boolean.
- */
-/**
- * Fails when a requested browse level is missing from the response breadcrumb.
+ * Raised when nothing about a product could be read, naming why each variant failed.
  *
- * The site ignores a level it does not recognise and returns the wider set anyway, so without
- * this a whole department comes back labelled as one aisle. Validation against the tree should
- * prevent it; this catches the case where the tree and the site disagree, which is possible
- * because aisle slugs are derived rather than published.
+ * The two causes are different and the message says which: the site offered no variant at all —
+ * a product not ranged at this store — or it offered one whose shape this server does not
+ * understand. Reporting either as "no variants" would hide a schema change behind a plausible
+ * answer.
  */
-function assertNarrowed(
-  requested: CategoryFilter,
-  breadcrumb: RawSearchResponse["breadcrumb"],
-): void {
-  const applied: readonly [string, string | undefined, { name: string } | null | undefined][] = [
-    ["department", requested.department, breadcrumb?.department],
-    ["aisle", requested.aisle, breadcrumb?.aisle],
-    ["shelf", requested.shelf, breadcrumb?.shelf],
-  ];
-  for (const [level, asked, got] of applied) {
-    if (asked !== undefined && (got === null || got === undefined)) {
-      throw new UnknownCategoryError(
-        `The site ignored the ${level} '${asked}' and would have returned the wider set. ` +
-          "Its browse tree and this server's disagree; re-read list_categories.",
-      );
-    }
+export class UndescribableProductError extends Error {
+  constructor(sku: string, storeKey: string, rejected: readonly string[]) {
+    super(
+      rejected.length === 0
+        ? `Woolworths returned product ${sku} at store ${storeKey} with no variants, so it states ` +
+            "no price, availability or key for it. It is most likely not ranged at that store."
+        : `No variant of product ${sku} at store ${storeKey} could be read. The site offered: ` +
+            rejected.join(" | "),
+    );
+    this.name = "UndescribableProductError";
   }
 }
 
-/** Raised when a category slug is not in the tree, instead of letting the site answer -1. */
-export class UnknownCategoryError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UnknownCategoryError";
+/** Raised when the site returns no product for a sku, rather than an empty detail. */
+/**
+ * One shopper, roughly one request a second. Enforced in the transport so no tool can bypass it.
+ */
+const MIN_REQUEST_INTERVAL_MS = 1_000;
+
+/** A term certain to match something, used only to read which store the catalogue answers for. */
+const STORE_KEY_PROBE = "milk";
+
+/** Raised when a move names an address the account does not hold, rather than moving nowhere. */
+export class UnknownAddressError extends Error {
+  constructor(addressId: string, known: readonly SavedAddress[]) {
+    super(
+      `This account has no saved address ${addressId}. It holds: ` +
+        `${known.map((address) => `${address.id} (${address.address})`).join("; ") || "(none)"}.`,
+    );
+    this.name = "UnknownAddressError";
   }
 }
 
+/**
+ * What this session actually grants, demonstrated rather than inferred.
+ *
+ * `usable` comes from making a real account call. Nothing here reads a session-state endpoint:
+ * such an endpoint has been observed disagreeing with account access in both directions, so only
+ * a call that actually needs the account describes whether the account tools work.
+ */
 export interface AccountAccess {
   readonly usable: boolean;
-  readonly shellReportsSignedIn: boolean;
-  readonly firstName: string | undefined;
 }
 
 export type CartWriteOutcome =
@@ -116,62 +142,93 @@ export type CartWriteOutcome =
 
 export interface CartWriteResult {
   readonly sku: string;
+  /** The line a write targets. A product sold both ways has one variant key per pricing. */
+  readonly variantKey: string;
   /** What was asked for. */
   readonly requestedQuantity: number;
   /** Absent on a removal: setting a line to 0 has no pricing unit. */
   readonly requestedPricingUnit: PricingUnit | undefined;
-  /** What the site actually put in the trolley. May differ from the request. */
+  /** What the site actually put in the cart. May differ from the request. */
   readonly appliedQuantity: number;
-  /** Absent on a removal, for the same reason. */
+  /**
+   * The unit of the line the cart holds, read from the line itself. Differs from the request when
+   * the site put the product under its other pricing. Absent on a removal.
+   */
   readonly appliedPricingUnit: string | undefined;
   /** True when the site did not honour the request exactly; `adjustment` then says how. */
   readonly adjusted: boolean;
   readonly adjustment: string | undefined;
-  /** Whether the sku has a line in the trolley after the write. */
-  readonly lineInTrolley: boolean;
+  /** Whether the variant has a line in the cart after the write. */
+  readonly lineInCart: boolean;
   /**
-   * Sum of quantities across the whole trolley, not a count of lines. Undefined when the site
-   * did not report it, which it does not on a write that left no line — never read as zero.
+   * The site's own item count for the whole cart. A weighed line counts once however many
+   * kilograms it holds, so this is not a sum of the quantities.
    */
-  readonly trolleyTotalQuantity: number | undefined;
-  readonly successful: boolean;
+  readonly cartTotalQuantity: number;
+  /** Distinct product variants in the cart after the write. */
+  readonly cartLineCount: number;
+  /** True when the cart cannot be checked out as it stands; `blockers` says why. */
+  readonly checkoutBlocked: boolean;
+  readonly blockers: readonly CartValidationFailure[];
 }
 
-const REFINE_PRODUCTS =
-  "request further pages until one comes back short, or use browse_category with the slugs from " +
-  "categoryCounts, which lists a category exhaustively.";
+/**
+ * Slug form of a department name, matching the slugs `list_categories` returns: "Fruit & Veg"
+ * becomes "fruit-veg". Products name their department; the browse tree names both, and the
+ * caller is given slugs, so the two are compared in slug form.
+ */
+function toSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 /**
- * Narrows a search result to one department in this process.
+ * Keeps only the products in one department, and says what that cost.
  *
- * `dasFilter` is inert on `target=search` — verified live, every form returns zero — so the
- * upstream cannot do it. Filtering here covers only the page that was fetched, and the coverage
- * sentence says so rather than implying the department was searched exhaustively.
+ * The site's search takes no category argument, so this runs over the page already fetched. The
+ * report is not optional decoration: without it a filtered page is indistinguishable from a
+ * search that genuinely found little, and `matchesAvailable` still counts the unfiltered query.
  */
-function narrowToDepartment(result: SearchResult, department: string): SearchResult {
-  const wanted = department.trim().toLowerCase();
-  const kept = result.products.filter(
-    (product) => product.department !== undefined && slugify(product.department) === wanted,
+function filterToDepartment(found: SearchResult, department: string): SearchResult {
+  const wanted = toSlug(department);
+  const seen = new Set<string>();
+  for (const product of found.products) {
+    if (product.department !== undefined) seen.add(toSlug(product.department));
+  }
+  const kept = found.products.filter(
+    (product) => product.department !== undefined && toSlug(product.department) === wanted,
   );
-  const facet = result.categoryCounts.find(
-    (count) => count.group === "Department" && count.department === wanted,
-  );
-  const inDepartment = facet?.productCount;
-
+  const departmentsSeen = [...seen].sort();
   return {
-    ...result,
+    ...found,
     products: kept,
     returned: kept.length,
     complete: false,
     coverage:
-      `Showing ${kept.length} products in '${department}', filtered from the ${result.returned} ` +
-      `fetched on page ${result.page} of ${result.matchesAvailable} total matches` +
-      (inDepartment === undefined
-        ? ". The site does not report how many matches that department holds, so this is NOT known to be all of them."
-        : `. The site reports ${inDepartment} matches in that department, so this is NOT all of them unless those numbers agree.`) +
-      " Request further pages before making any cheapest/only/none-available claim.",
+      `Showing ${kept.length} products in '${department}', kept from the ${found.products.length} ` +
+      `on page ${found.page} of an unfiltered search. The site's search takes no category ` +
+      `argument, so only this page was examined: matchesAvailable (${found.matchesAvailable ?? "not reported"}) ` +
+      `counts the whole unfiltered query, and other pages may hold more in this department. ` +
+      `This is NOT the full set. Departments on this page: ` +
+      `${departmentsSeen.length === 0 ? "none stated" : departmentsSeen.join(", ")}. ` +
+      `To walk a department exhaustively use browse_category with a key from list_categories.`,
+    departmentFilter: {
+      department,
+      examined: found.products.length,
+      matched: kept.length,
+      departmentsSeen,
+    },
   };
 }
+
+/** The host Woolworths serves product imagery from, as observed in product detail responses. */
+const IMAGE_HOSTS = new Set(["assets.woolworths.com.au"]);
+
+const REFINE_PRODUCTS =
+  "request further pages until one comes back short, or use browse_category with a key from " +
+  "list_categories, which walks a category exhaustively.";
 
 function adjustmentDiffers(
   requestedQuantity: number,
@@ -188,37 +245,41 @@ function adjustmentDiffers(
   ).adjusted;
 }
 
-/** Non-product tiles the listings are known to mix in. Anything else is logged as unrecognised. */
-const KNOWN_TILE_TYPES = new Set(["PromoTile", "PromotionalCarousel"]);
-
 /** Shared by every product listing: search, browse and specials differ only in what they select. */
 interface ListingRequest {
   readonly page: number;
   readonly sort: SortOption;
-  readonly inStockOnly: boolean;
-  readonly size?: number;
+  readonly size?: number | undefined;
 }
 
-export interface StoreSearchResult extends Coverage {
+export interface StoreSearchResult {
   readonly stores: readonly Store[];
+  readonly returned: number;
+  /**
+   * Always false. The site offers no national store list: this is a proximity search around the
+   * cart's delivery address, capped at `max`, so no result of it is ever the full set.
+   */
+  readonly complete: false;
+  readonly coverage: string;
 }
 
-export interface CategoryFilter {
-  readonly department?: string;
-  readonly aisle?: string;
-  readonly shelf?: string;
-}
-
-export interface SearchRequest extends ListingRequest, CategoryFilter {
+export interface SearchRequest extends ListingRequest {
   readonly query: string;
+  /**
+   * Department slug to keep. The site's search accepts no category argument, so this is applied
+   * to the fetched page after the fact and the coverage sentence says so.
+   */
+  readonly department?: string | undefined;
 }
 
-export interface BrowseRequest extends ListingRequest, CategoryFilter {
-  readonly department: string;
+/** A category is addressed by the key `list_categories` returns, not by a slug. */
+export interface BrowseRequest extends ListingRequest {
+  readonly categoryKey: string;
 }
 
 export interface SpecialsRequest extends ListingRequest {
-  readonly department?: string;
+  /** Promotion types to include. Defaults to every special. */
+  readonly filters?: readonly string[] | undefined;
 }
 
 /**
@@ -228,55 +289,64 @@ export interface SpecialsRequest extends ListingRequest {
  * from `matchesAvailable`, which is what paging actually walks.
  */
 export interface SearchResult extends Coverage {
-  readonly products: readonly CompactProduct[];
-  readonly matchesAvailable: number;
-  readonly sort: string;
-  readonly categoryCounts: readonly CategoryCount[];
+  readonly products: readonly CatalogueProduct[];
+  /**
+   * Undefined when the site returned a count it could not resolve. The sentinel it uses for that
+   * is a negative number, and passing it on as a count would read as a real total.
+   */
+  readonly matchesAvailable: number | undefined;
+  /** Advertising tiles the site mixed into the grid and this server dropped. */
+  readonly advertisingExcluded: number;
+  /**
+   * Products the site returned that this server could not describe. Reported, never hidden: a
+   * short page must be distinguishable from a page the site had nothing more on.
+   */
+  readonly unparsed: readonly string[];
+  /** Present only when a `department` was asked for. */
+  readonly departmentFilter?: DepartmentFilterReport;
 }
 
-export interface SuburbMatch {
-  readonly id: number;
-  readonly name: string;
+export interface DepartmentFilterReport {
+  readonly department: string;
+  /** Products on this page before the filter ran. */
+  readonly examined: number;
+  /** Products the filter kept. */
+  readonly matched: number;
+  /** Department slugs seen on this page, so a slug that matches nothing can be corrected. */
+  readonly departmentsSeen: readonly string[];
 }
-
-/** What `setLocation` did. Ambiguity is an outcome, not an error: the caller must ask. */
-export type SetLocationOutcome =
-  | {
-      readonly kind: "set";
-      readonly suburb: SuburbMatch;
-      readonly fulfilment: Fulfilment;
-      /** Set when the requested name was not what the site actually matched. */
-      readonly interpretedAs: string | undefined;
-    }
-  | { readonly kind: "ambiguous"; readonly matches: readonly SuburbMatch[] }
-  | { readonly kind: "notFound" };
 
 /**
  * The Woolworths operations this server exposes, in domain terms. Everything above this layer
  * deals in compact shapes; everything below it deals in the site's raw JSON.
  */
 export class WoolworthsApi {
-  private readonly client: WoolworthsClient;
+  private readonly session: Session;
   private readonly authenticator: Authenticator;
-  private departments: readonly Department[] | undefined;
 
-  private categoryIndex: CategoryIndex | undefined;
-  private readonly now: () => number;
+  /** Every GraphQL operation. One session, one cookie jar, one request at a time. */
+  private readonly cart: GraphQlCart;
 
   constructor(
-    client: WoolworthsClient,
+    session: Session,
     authenticator: Authenticator,
     now: () => number = Date.now,
+    cart?: GraphQlCart,
   ) {
-    this.client = client;
+    this.session = session;
     this.authenticator = authenticator;
-    this.now = now;
+    this.cart =
+      cart ??
+      new GraphQlCart(
+        new SessionGraphQlTransport(session, new Throttle(MIN_REQUEST_INTERVAL_MS)),
+        SIGNED_IN_TTL_MS,
+        now,
+      );
   }
 
   /** Signs in if the session is anonymous, and reports the outcome either way. */
   async signIn(): Promise<SignInOutcome> {
-    const status = await this.getAccountStatus();
-    return this.authenticator.signIn(status.signedIn);
+    return this.authenticator.signIn((await this.checkAccountAccess()).usable);
   }
 
   /**
@@ -286,534 +356,585 @@ export class WoolworthsApi {
    * so a person signs in and hands the result over. Returns the signed-in state afterwards, so the
    * caller learns whether the handover actually worked rather than assuming it did.
    */
-  async importSession(cookies: readonly ImportedCookie[]): Promise<AccountStatus> {
-    await this.client.shopperSession.importCookies(cookies);
-    return this.getAccountStatus();
+  async importSession(cookies: readonly ImportedCookie[]): Promise<AccountAccess> {
+    await this.session.importCookies(cookies);
+    this.invalidateSignedIn();
+    return this.checkAccountAccess();
   }
 
   /**
    * Whether the account tools will actually work, established by making an account call rather
-   * than by reading `/shell`.
+   * than by reading any session-state endpoint.
    *
-   * `/shell`'s `isLoggedIn` is a proxy and has been observed true while `trolleys/my` returned
-   * 401, so a status built on it can contradict the very tools it describes. The probe uses the
-   * trolley because that is the access the account tools need; any other endpoint would be a
-   * different proxy with the same failure mode.
+   * The probe is the GraphQL cart read: it is the access every account tool needs, and the one
+   * call that also proves the site is not answering as a guest.
    */
   async checkAccountAccess(): Promise<AccountAccess> {
-    const shell = await this.getAccountStatus();
-    try {
-      await this.accountGet("trolleys/my");
-      return { usable: true, shellReportsSignedIn: shell.signedIn, firstName: shell.firstName };
-    } catch (error: unknown) {
-      if (error instanceof NotSignedInError) {
-        return {
-          usable: false,
-          shellReportsSignedIn: shell.signedIn,
-          firstName: shell.firstName,
-        };
-      }
-      throw error;
-    }
+    const usable = await this.cart.isUsable();
+    return { usable };
   }
 
   /** The session cookie's stated `Expires` date: an upper bound, not proof the session works. */
   cookieExpiry(): Promise<Date | undefined> {
-    return this.client.shopperSession.cookieExpiry();
+    return this.session.cookieExpiry();
   }
 
+  /**
+   * Searches the catalogue. One upstream operation serves search, browse and specials; the input
+   * selector distinguishes them, not the operation name the site tags them all with.
+   */
   async searchProducts(request: SearchRequest): Promise<SearchResult> {
-    if (request.department !== undefined) await this.assertDepartmentExists(request.department);
-    const result = await this.productQuery(
-      "/products?target=search",
+    const found = await this.productQuery(
+      keywordSearchVariables(
+        request.query,
+        request.page,
+        request.size ?? DEFAULT_PAGE_SIZE,
+        request.sort,
+      ),
       request.page,
-      request.sort,
-      {
-        target: "search",
-        search: request.query,
-        size: request.size ?? DEFAULT_PAGE_SIZE,
-        page: request.page,
-        sort: request.sort,
-        inStockProductsOnly: request.inStockOnly,
-      },
-      request.inStockOnly,
     );
-    if (request.department === undefined) return result;
-    return narrowToDepartment(result, request.department);
+    const wanted = request.department?.trim();
+    if (wanted === undefined || wanted === "") return found;
+    return filterToDepartment(found, wanted);
   }
 
-  /** Runs several searches in one call so discovering N products costs one round trip. */
+  /** Browses a category by the key `list_categories` returns. */
+  async browseCategory(request: BrowseRequest): Promise<SearchResult> {
+    return this.productQuery(
+      categorySearchVariables(
+        request.categoryKey,
+        request.page,
+        request.size ?? DEFAULT_PAGE_SIZE,
+        request.sort,
+      ),
+      request.page,
+    );
+  }
+
+  /**
+   * What is on special, optionally narrowed to a promotion type.
+   *
+   * With no filter every promotion type is sent, which is what the site's own "Specials" page
+   * does. `SPECIALS` is a sibling type, not a superset: asking for it alone reported 5132 of the
+   * 6644 the full set reported, so defaulting to it would drop every half-price, multibuy,
+   * member-price and online-only item not also tagged `SPECIALS`.
+   */
+  async getSpecials(request: SpecialsRequest): Promise<SearchResult> {
+    return this.productQuery(
+      specialsVariables(
+        request.page,
+        request.size ?? DEFAULT_PAGE_SIZE,
+        request.sort,
+        request.filters ?? SPECIAL_FILTERS,
+      ),
+      request.page,
+    );
+  }
+
+  /**
+   * Runs one catalogue query and describes what came back.
+   *
+   * Neither `pageSize` nor `currentPage` is used to describe the page: the site echoes the number
+   * of rows returned rather than the size asked for, and `currentPage` reads -1 on an empty
+   * result. The requested page is passed in instead.
+   */
+  private async productQuery(
+    variables: ProductSearchVariables,
+    page: number,
+  ): Promise<SearchResult> {
+    return this.describeGrid((await this.cart.searchProducts(variables)).My.products, page);
+  }
+
+  /** Turns one page envelope into a described result. Shared by the single and batched searches. */
+  private describeGrid(raw: RawProductPage, page: number): SearchResult {
+    const grid = toProductGrid(raw);
+    if (grid.rejections.length > 0) {
+      console.error(
+        `[woolies-mcp] ${grid.rejections.length} catalogue product(s) did not parse: ` +
+          grid.rejections.join(" | "),
+      );
+    }
+    return {
+      ...toCoverage({
+        returned: grid.products.length,
+        matchesAvailable: raw.totalCount,
+        page,
+        noun: "products",
+        refinement: REFINE_PRODUCTS,
+        unparsed: grid.rejections.length,
+      }),
+      products: grid.products,
+      advertisingExcluded: grid.advertisingExcluded,
+      unparsed: grid.rejections,
+    };
+  }
+
+  /**
+   * Runs several searches, each reported with its own coverage.
+   *
+   * One request carrying every query, not one request per query. `My.products` aliases, so the
+   * router answers them together; the throttle spaces requests a second apart, which made the
+   * sequential form cost a second per query.
+   */
   async searchMany(
     queries: readonly string[],
     request: Omit<SearchRequest, "query">,
-  ): Promise<readonly { query: string; result: SearchResult }[]> {
-    const results: { query: string; result: SearchResult }[] = [];
-    for (const query of queries) {
-      results.push({ query, result: await this.searchProducts({ ...request, query }) });
-    }
-    return results;
-  }
-
-  /**
-   * Browses a department, aisle or shelf. Every level narrows, but only when the slug exists: an
-   * unrecognised one is ignored and the wider set comes back wearing the narrower label, so the
-   * slugs are checked against the tree first and the response breadcrumb is checked afterwards.
-   */
-  async browseCategory(request: BrowseRequest): Promise<SearchResult> {
-    await this.assertCategoryExists(request);
-    const levels = [`Department;;${request.department};false`];
-    if (request.aisle !== undefined) levels.push(`Aisle;;${request.aisle};false`);
-    if (request.shelf !== undefined) levels.push(`Shelf;;${request.shelf};false`);
-
-    return this.productQuery(
-      "/products?target=browse",
+  ): Promise<readonly { readonly query: string; readonly result: SearchResult }[]> {
+    if (queries.length === 0) return [];
+    const data = await this.cart.searchManyProducts(
+      queries,
       request.page,
+      request.size ?? DEFAULT_PAGE_SIZE,
       request.sort,
-      {
-        target: "browse",
-        dasFilter: levels,
-        size: request.size ?? DEFAULT_PAGE_SIZE,
-        page: request.page,
-        sort: request.sort,
-        inStockProductsOnly: request.inStockOnly,
-      },
-      request.inStockOnly,
-      "products",
-      request,
     );
+    return queries.map((query, index) => {
+      const page = data.My[multiSearchAlias(index)];
+      // The aliases are generated from this same list, so one missing is the site answering a
+      // query it was asked and this server not seeing it — never quietly an empty result.
+      if (page === undefined) {
+        throw new Error(
+          `Woolworths answered ${Object.keys(data.My).length} of the ${queries.length} searches ` +
+            `sent in one request; nothing came back under '${multiSearchAlias(index)}' for ` +
+            `"${query}". None of these results can be trusted to match their query.`,
+        );
+      }
+      return { query, result: this.describeGrid(page, request.page) };
+    });
   }
 
   /**
-   * An unknown slug makes the site ignore that level, returning the wider set, or answer
-   * `totalItems: -1` for an unknown department. Checking against the tree first turns a typo into
-   * an error naming the valid slugs, as `list_categories` already does.
+   * The browse tree.
+   *
+   * One node comes back — the root with no key, or the node named by one — and `depth` bounds how
+   * far below it is listed. The site always sends all four levels, 773 nodes of them, so the
+   * bound is applied here; a node whose children were cut reports how many it has.
    */
-  private async assertCategoryExists(filter: CategoryFilter): Promise<void> {
-    const departments = await this.listCategories();
-    const department = departments.find((candidate) => candidate.slug === filter.department);
-    if (department === undefined) {
-      throw new UnknownCategoryError(
-        `No department with slug '${String(filter.department)}'. Valid slugs: ${departments
-          .map((candidate) => candidate.slug)
-          .join(", ")}.`,
-      );
-    }
-    if (filter.aisle === undefined) return;
-
-    const aisle = department.aisles.find((candidate) => candidate.slug === filter.aisle);
-    if (aisle === undefined) {
-      throw new UnknownCategoryError(
-        `No aisle '${filter.aisle}' in ${department.slug}. Valid aisles: ${department.aisles
-          .map((candidate) => candidate.slug)
-          .join(", ")}.`,
-      );
-    }
-    if (filter.shelf === undefined) return;
-
-    if (!aisle.shelves.some((candidate) => candidate.slug === filter.shelf)) {
-      throw new UnknownCategoryError(
-        `No shelf '${filter.shelf}' in ${department.slug}/${aisle.slug}. Valid shelves: ${aisle.shelves
-          .map((candidate) => candidate.slug)
-          .join(", ")}.`,
-      );
-    }
-  }
-
-  private async assertDepartmentExists(slug: string): Promise<void> {
-    await this.assertCategoryExists({ department: slug });
-  }
-
-  async getSpecials(request: SpecialsRequest): Promise<SearchResult> {
-    const department = request.department;
-    if (department !== undefined) await this.assertDepartmentExists(department);
-    return this.productQuery(
-      "/products?target=specials",
-      request.page,
-      request.sort,
-      {
-        target: "specials",
-        useRankedSpecials: true,
-        ...(department === undefined ? {} : { dasFilter: [`Department;;${department};false`] }),
-        size: request.size ?? DEFAULT_PAGE_SIZE,
-        page: request.page,
-        sort: request.sort,
-        inStockProductsOnly: request.inStockOnly,
-      },
-      request.inStockOnly,
-    );
+  async listCategories(categoryKey?: string, depth = 1): Promise<CategoryNode> {
+    const data = await this.cart.listCategories(categoryKey);
+    return toCategoryNode(data.My.categories, depth);
   }
 
   /**
-   * The browse tree, fetched once per process. It changes on the scale of weeks, and a server
-   * restart is the refresh; an empty tree is not cached, so a bad fetch retries next call.
+   * Pick-up locations near where the cart is being delivered, nearest first.
+   *
+   * The site's own search by name alone returned nothing; the one that worked carried
+   * coordinates, so this searches by position and filters by name afterwards.
    */
-  async listCategories(): Promise<readonly Department[]> {
-    const cached = this.departments;
-    if (cached !== undefined) return cached;
-
-    const payload = await this.client.get("products/departments");
-    const parsed = parseResponse(departmentsResponseSchema, payload, "/products/departments");
-    const departments = parsed.map(toDepartment);
-    if (departments.length > 0) {
-      this.departments = departments;
-      this.categoryIndex = buildCategoryIndex(departments);
-    }
-    return departments;
-  }
-
-  async findStores(query: string | undefined): Promise<StoreSearchResult> {
-    const payload = await this.client.get("addresses/pickup-addresses");
-    const parsed = parseResponse(
-      pickupAddressesResponseSchema,
-      payload,
-      "/addresses/pickup-addresses",
-    );
-    const stores = toStores(parsed.storeAreas);
-    const needle = query?.trim().toLowerCase();
+  async findStores(query: string | undefined, max = 20): Promise<StoreSearchResult> {
+    const coordinates = await this.deliveryCoordinates();
+    const data = await this.cart.searchLocations(query ?? "", max, coordinates);
+    const stores = data.locations.locations.map(toStore);
+    const wanted = query?.trim().toLowerCase();
     const matched =
-      needle === undefined
+      wanted === undefined || wanted === ""
         ? stores
-        : stores.filter(
-            (store) =>
-              store.name.toLowerCase().includes(needle) ||
-              store.address.toLowerCase().includes(needle),
+        : stores.filter((store) =>
+            `${store.name} ${store.address ?? ""} ${store.suburb ?? ""}`
+              .toLowerCase()
+              .includes(wanted),
           );
     return {
       stores: matched,
-      ...toCoverage({
-        returned: matched.length,
-        matchesAvailable: matched.length,
-        page: 1,
-        noun: "pick-up locations",
-        refinement: "search by name or suburb instead.",
-      }),
-    };
-  }
-
-  private async productQuery(
-    endpoint: string,
-    page: number,
-    sort: SortOption,
-    query: Readonly<Record<string, QueryValue>>,
-    inStockOnly: boolean,
-    path = "products",
-    requested?: CategoryFilter,
-  ): Promise<SearchResult> {
-    const payload = await this.client.get(path, query);
-    const parsed = parseResponse(searchResponseSchema, payload, endpoint);
-    if (requested !== undefined) assertNarrowed(requested, parsed.breadcrumb);
-    const { products, skippedTypes, rejections } = partitionSearchItems(parsed.products.items);
-
-    for (const rejection of rejections) {
-      console.error(`[woolies-mcp] dropped an unparseable product from ${endpoint} — ${rejection}`);
-    }
-    const unknownTiles = skippedTypes.filter((type) => !KNOWN_TILE_TYPES.has(type));
-    if (unknownTiles.length > 0) {
-      console.error(`[woolies-mcp] unrecognised result tile types: ${unknownTiles.join(", ")}`);
-    }
-
-    const mapped = products.map(toCompactProduct);
-    const matchesAvailable = parsed.products.totalItems;
-    const coverage =
-      mapped.length === 0 && page > 1 && matchesAvailable > 0
-        ? toEmptyPageCoverage(page, matchesAvailable, "products")
-        : toCoverage({
-            returned: mapped.length,
-            matchesAvailable,
-            page,
-            noun: "products",
-            refinement: REFINE_PRODUCTS,
-            filteredToInStock: inStockOnly,
-          });
-
-    return {
-      ...coverage,
-      products: mapped,
-      matchesAvailable,
-      sort: parsed.currentSortOption ?? sort,
-      categoryCounts: toCategoryCounts(parsed.dasFacets, await this.readCategoryIndex()),
+      returned: matched.length,
+      complete: false,
+      coverage:
+        `Showing ${matched.length} of the ${stores.length} pick-up locations the site returned ` +
+        `nearest this cart's delivery address, at most ${max}. A proximity search, not the full ` +
+        `list of stores: a location's absence here is not evidence it does not exist.`,
     };
   }
 
   /**
-   * The index that turns facet ids into browse slugs. Built from the department tree, which is
-   * fetched once; if that fetch fails the counts are still returned, just without slugs.
+   * One product in full.
+   *
+   * `storeKey` is required upstream because price and availability are per store. It is read from
+   * a catalogue result rather than assumed.
    */
-  private async readCategoryIndex(): Promise<CategoryIndex | undefined> {
-    const cached = this.categoryIndex;
-    if (cached !== undefined) return cached;
-    try {
-      await this.listCategories();
-    } catch (error: unknown) {
-      console.error("[woolies-mcp] category slugs unavailable for this result:", error);
-      return undefined;
-    }
-    return this.categoryIndex;
-  }
-
-  /**
-   * Fetches a product's label photo as raw bytes. The image host is a CDN outside the API, so it
-   * takes no API headers; it still goes through the session for the throttle.
-   */
-  async getProductImage(sku: string): Promise<{ bytes: Uint8Array; mimeType: string }> {
-    const detail = await this.getProduct(sku);
-    const url = detail.imageUrls[0];
-    if (url === undefined) {
-      throw new Error(`Woolworths publishes no image for SKU ${sku}.`);
-    }
-    const response = await fetch(url, { signal: AbortSignal.timeout(20_000) });
-    if (!response.ok) {
-      throw new Error(`Label image for SKU ${sku} returned HTTP ${response.status}.`);
-    }
-    const mimeType = response.headers.get("content-type") ?? "image/jpeg";
-    return { bytes: new Uint8Array(await response.arrayBuffer()), mimeType };
-  }
-
   async getProduct(sku: string): Promise<ProductDetail> {
-    const payload = await this.client.get(`products/${encodeURIComponent(sku)}`);
-    return toProductDetail(parseResponse(productDetailSchema, payload, `/products/${sku}`));
-  }
+    const storeKey = await this.storeKey();
+    const data = await this.cart.getProductDetail([sku], storeKey);
+    const product = data.products[0];
+    // The transport raises UnknownProductError for a key the site cannot resolve, so an empty
+    // list here would be the site answering with a product-shaped nothing.
+    if (product === undefined) throw new UnknownProductError([sku], storeKey);
 
-  async findSuburbs(query: string): Promise<readonly SuburbMatch[]> {
-    const payload = await this.client.get("suburbs", { query });
-    const parsed = parseResponse(suburbsResponseSchema, payload, "/suburbs");
-    return parsed.suburbResults.map((result) => ({ id: result.id, name: result.text }));
-  }
-
-  async getFulfilment(): Promise<Fulfilment> {
-    const payload = await this.client.get("shell");
-    return toFulfilment(parseResponse(fulfilmentContextSchema, payload, "/shell"));
-  }
-
-  /**
-   * Resolves a suburb name and, when it is unambiguous, switches the session to it.
-   *
-   * The PUT answers with the new fulfilment context, but the confirmation reads `/shell`
-   * afterwards so the reported location is the one a later search will actually use.
-   */
-  async setLocation(suburb: string): Promise<SetLocationOutcome> {
-    const matches = await this.findSuburbs(suburb);
-    if (matches.length === 0) return { kind: "notFound" };
-
-    const chosen = matches.length === 1 ? matches[0] : exactMatch(matches, suburb);
-    if (chosen === undefined) return { kind: "ambiguous", matches };
-
-    await this.client.put(`fulfilment/my/suburbs/${chosen.id}`);
-    const requested = suburb.trim().toLowerCase();
-    return {
-      kind: "set",
-      suburb: chosen,
-      fulfilment: await this.getFulfilment(),
-      interpretedAs: chosen.name.trim().toLowerCase() === requested ? undefined : chosen.name,
-    };
-  }
-
-  async getAccountStatus(): Promise<AccountStatus> {
-    const payload = await this.client.get("shell");
-    return toAccountStatus(parseResponse(shopperContextSchema, payload, "/shell"));
-  }
-
-  /**
-   * Confirmed sign-in is cached briefly so a burst of cart writes costs one /shell call rather
-   * than one per write. The window is safe because `onAccountEndpoint` drops the cache on the
-   * first 401: a session that dies mid-window costs one failed call, which reports correctly,
-   * rather than a minute of wrong answers.
-   */
-  private signedInUntilMs = Number.NEGATIVE_INFINITY;
-  private cachedStatus: AccountStatus | undefined;
-
-  invalidateSignedIn(): void {
-    this.signedInUntilMs = Number.NEGATIVE_INFINITY;
-    this.cachedStatus = undefined;
-  }
-
-  async requireSignedIn(): Promise<AccountStatus> {
-    const cached = this.cachedStatus;
-    if (cached !== undefined && this.now() < this.signedInUntilMs) return cached;
-    const status = await this.confirmSignedIn();
-    this.cachedStatus = status;
-    this.signedInUntilMs = this.now() + SIGNED_IN_TTL_MS;
-    return status;
-  }
-
-  /**
-   * Runs an account operation, turning the site's 401 into the message that says what to do.
-   *
-   * A 401 means this session is no longer honoured. The cached status is dropped so the next
-   * call re-checks instead of trusting the window, and the raw "Ooops looks like you cant
-   * perform that action" is replaced by the sign-in instructions. Not a session rejection in the
-   * `client.ts` sense: re-bootstrapping produces an anonymous session, which is what 401s.
-   */
-  private async accountGet(path: string, query: Readonly<Record<string, QueryValue>> = {}) {
-    return this.onAccountEndpoint(() => this.client.get(path, query));
-  }
-
-  private async accountPost(path: string, body: unknown) {
-    return this.onAccountEndpoint(() => this.client.post(path, body));
-  }
-
-  private async onAccountEndpoint<T>(call: () => Promise<T>): Promise<T> {
-    try {
-      return await call();
-    } catch (error: unknown) {
-      if (error instanceof WoolworthsApiError && error.status === UNAUTHORIZED) {
-        this.invalidateSignedIn();
-        throw new NotSignedInError({ cause: error });
+    // A variant that does not parse is described, never dropped in silence: skipping it quietly
+    // turns a shape change into "this product has no variants", which reads as a real answer.
+    const variants: RawDetailVariant[] = [];
+    const rejected: string[] = [];
+    for (const raw of product.variants) {
+      const parsed = detailVariantSchema.safeParse(raw);
+      if (parsed.success) {
+        variants.push(parsed.data);
+        continue;
       }
-      throw error;
+      const typename = typeof raw.__typename === "string" ? raw.__typename : "<no __typename>";
+      rejected.push(
+        `${typename}: ${parsed.error.issues
+          .map((issue) => `${issue.path.join(".") || "<root>"} ${issue.message}`)
+          .join("; ")}`,
+      );
     }
+    if (variants.length === 0) throw new UndescribableProductError(sku, storeKey, rejected);
+    if (rejected.length > 0) {
+      console.error(
+        `[woolies-mcp] ${rejected.length} variant(s) of ${sku} did not parse: ${rejected.join(" | ")}`,
+      );
+    }
+    return toProductDetail(product, variants, storeKey);
   }
 
-  private async confirmSignedIn(): Promise<AccountStatus> {
-    const status = await this.getAccountStatus();
-    if (status.signedIn) return status;
-
-    const outcome = await this.authenticator.signIn(false);
-    if (outcome.kind !== "alreadySignedIn") throw new NotSignedInError();
-    return status;
-  }
-
-  async getCart(): Promise<Cart> {
-    await this.requireSignedIn();
-    const payload = await this.accountGet("trolleys/my");
-    const parsed = parseResponse(trolleyResponseSchema, payload, "/trolleys/my");
-    const lines = toCartLines(parsed.items.flatMap((group) => group.products));
-    const totals = parsed.context.basketTotals;
+  /**
+   * Fetches one product image so it can be shown rather than linked.
+   *
+   * Restricted to the site's own asset hosts: the URL comes from a site response, and a server
+   * that will fetch any URL a response names is a server that can be pointed anywhere.
+   */
+  async fetchImage(url: string): Promise<{ readonly base64: string; readonly mimeType: string }> {
+    const target = new URL(url);
+    if (!IMAGE_HOSTS.has(target.hostname)) {
+      throw new Error(
+        `Refusing to fetch ${target.hostname}: product images are only fetched from ` +
+          `${[...IMAGE_HOSTS].join(", ")}.`,
+      );
+    }
+    const response = await this.session.fetch(target);
+    if (!response.ok) {
+      throw new Error(`Woolworths returned HTTP ${response.status} for the image at ${url}.`);
+    }
+    const mimeType = response.headers.get("content-type")?.split(";")[0]?.trim();
+    if (mimeType === undefined || mimeType === "" || !mimeType.startsWith("image/")) {
+      throw new Error(
+        `The asset at ${url} is not an image: the site served it as ` +
+          `${mimeType ?? "no content type at all"}.`,
+      );
+    }
     return {
-      lines,
-      lineCount: totals.totalItems,
-      totalQuantity: totals.totalItemQuantity,
-      totals: toCartTotals(totals),
+      base64: Buffer.from(await response.arrayBuffer()).toString("base64"),
+      mimeType,
     };
   }
 
   /**
-   * Sets one line to an absolute quantity; zero removes it. Add, update and remove are the same
-   * upstream call, so they cannot drift apart.
+   * The store the catalogue answers for.
    *
-   * Payload shape is from captured signed-in traffic: a single object, not a list, carrying
-   * `pricingUnit` ("Each" or "Kg") and `adId`. Decimal quantities are legal for Kg lines.
+   * Discovered from a catalogue result rather than assumed: it is absent from the cart until a
+   * delivery window is chosen, and guessing it would price against the wrong store in silence.
+   */
+  private cachedStoreKey: string | undefined;
+
+  /**
+   * Discards the cached store key. Moving the cart moves the store that prices it, and a key held
+   * across the move would price every later product detail against the store just left.
+   */
+  private forgetStoreKey(): void {
+    this.cachedStoreKey = undefined;
+  }
+
+  private async storeKey(): Promise<string> {
+    const cached = this.cachedStoreKey;
+    if (cached !== undefined) return cached;
+    const data = await this.cart.searchProducts(
+      keywordSearchVariables(STORE_KEY_PROBE, 1, 1, "RELEVANCE"),
+    );
+    const found = toProductGrid(data.My.products).products[0]?.storeKey;
+    if (found === undefined) {
+      throw new Error(
+        `Could not establish which store the catalogue answers for: a search for ` +
+          `"${STORE_KEY_PROBE}" returned no product to read it from. Product detail is per store, ` +
+          "so it is not fetched without one.",
+      );
+    }
+    this.cachedStoreKey = found;
+    return found;
+  }
+
+  private async deliveryCoordinates(): Promise<{
+    readonly latitude: number;
+    readonly longitude: number;
+  }> {
+    const coordinates = (await this.cart.read()).raw.shoppingMode.deliveryAddress?.coordinates;
+    if (coordinates === null || coordinates === undefined) {
+      throw new Error(
+        "The cart has no delivery address, so there is nowhere to search near. Set one with set_location.",
+      );
+    }
+    return coordinates;
+  }
+
+  /**
+   * The delivery location this session is shopping from; every price answer is for it.
+   *
+   * Read from the cart, which proves whose session it is on the same request.
+   */
+  async getFulfilment(): Promise<Fulfilment> {
+    return toFulfilment((await this.cart.read()).raw, await this.storeKey());
+  }
+
+  /** Drops the cached proof of identity, so the next account call re-establishes it. */
+  invalidateSignedIn(): void {
+    this.cart.forgetIdentity();
+  }
+
+  /**
+   * Reads the signed-in cart.
+   *
+   * The read proves on the same request that the cart belongs to the signed-in shopper.
+   * `/api/graphql` answers an unauthenticated caller with an empty *guest* cart at HTTP 200 and no
+   * error, so without that proof an expired session reads as "your cart is empty".
+   */
+  async getCart(): Promise<Cart> {
+    return (await this.cart.read()).cart;
+  }
+
+  /**
+   * Sets one product's line to an absolute quantity; zero removes it.
+   *
+   * The write targets a variant key (`<sku>-EA` or `<sku>-KG`), not a sku, and zeroes the other
+   * pricing of the same product in the same mutation: a product sold both by weight and by the
+   * item has one line per pricing, so without that a switch between them would leave both.
    */
   async setCartQuantity(
     sku: string,
     quantity: number,
     pricingUnit: PricingUnit,
   ): Promise<CartWriteResult> {
-    await this.requireSignedIn();
-    const payload = await this.accountPost("trolleys/my/items", {
-      sku,
+    return await this.describeWrite(
       quantity,
       pricingUnit,
-      adId: null,
-    });
-    const parsed = parseResponse(trolleyWriteResponseSchema, payload, "/trolleys/my/items");
-    if (!parsed.isSuccessful) this.invalidateSignedIn();
-
-    // A null line means the write left no line for this sku, which is zero of it in the trolley.
-    // The site reports that with isSuccessful true, so it is an outcome, not a failure.
-    const line = parsed.itemAdded ?? undefined;
-    const appliedQuantity = line?.quantity ?? 0;
-    const appliedPricingUnit = optionalText(line?.selectedPurchasingUnit);
-    // Falls back to what was asked so an unreported unit cannot read as the site overriding it.
-    const comparedPricingUnit = appliedPricingUnit ?? pricingUnit;
-    const adjustment = toCartAdjustment(
-      quantity,
-      appliedQuantity,
-      pricingUnit,
-      comparedPricingUnit,
-      // Only fetched when the site changed something, so the common path stays one call.
-      adjustmentDiffers(quantity, appliedQuantity, pricingUnit, comparedPricingUnit)
-        ? await this.averageWeightOf(sku)
-        : undefined,
+      await this.cart.setQuantity(sku, quantity, pricingUnit),
     );
-
-    const isRemoval = quantity === 0;
-    return {
-      sku,
-      requestedQuantity: quantity,
-      requestedPricingUnit: isRemoval ? undefined : pricingUnit,
-      appliedQuantity,
-      appliedPricingUnit: isRemoval ? undefined : appliedPricingUnit,
-      // Absent, not zero: a null here says the site did not report the trolley's total.
-      lineInTrolley: appliedQuantity > 0,
-      adjusted: adjustment.adjusted,
-      adjustment: adjustment.note,
-      trolleyTotalQuantity: parsed.totalItemQuantityInBasket ?? undefined,
-      successful: parsed.isSuccessful,
-    };
   }
 
-  /** A failure here must not fail the write, which already succeeded; the note degrades instead. */
-  private async averageWeightOf(sku: string): Promise<number | undefined> {
-    try {
-      return (await this.getProduct(sku)).averageWeightPerUnit;
-    } catch (error: unknown) {
-      console.error(`[woolies-mcp] could not read average unit weight for ${sku}:`, error);
-      return undefined;
-    }
-  }
-
-  /** A removal needs no pricing unit; the site ignores it when the quantity is 0. */
-  removeFromCart(sku: string): Promise<CartWriteResult> {
-    return this.setCartQuantity(sku, 0, "Each");
+  /** Removes every line for a sku, whichever pricing the cart holds it under. */
+  async removeFromCart(sku: string): Promise<CartWriteResult> {
+    return await this.describeWrite(0, "EACH", await this.cart.remove(sku, "EACH"));
   }
 
   /**
-   * Writes several lines in one call. Each is reported separately; a failure on one is returned
-   * as a failure for that sku and never removes it from the results.
+   * Sets several products' lines in one mutation, which is how the site's own frontend batches
+   * them.
+   *
+   * The batch shares one outcome: the site applies the whole list or rejects it, so a rejection is
+   * reported against every requested sku rather than leaving the caller to guess which landed.
    */
   async setCartQuantities(
     items: readonly { sku: string; quantity: number; pricingUnit: PricingUnit }[],
   ): Promise<readonly CartWriteOutcome[]> {
-    await this.requireSignedIn();
+    let written: readonly CartWriteFacts[];
+    try {
+      written = await this.cart.setQuantities(items);
+    } catch (error: unknown) {
+      // Only a rejection of the mutation itself means the cart is untouched. Anything else — a
+      // dead session, a cart key that did not match, a response this server could not read —
+      // happens around a write that may already have landed, and saying "nothing was changed"
+      // about it would invite the caller to send it again.
+      if (!(error instanceof GraphQlError)) throw error;
+      const reason =
+        `The batch was rejected as a whole, so no item in it was written. The site gave one ` +
+        `reason for the batch, which does not name which item caused it: ${error.message}`;
+      return items.map((item) => ({ kind: "failed" as const, sku: item.sku, reason }));
+    }
     const outcomes: CartWriteOutcome[] = [];
-    for (const item of items) {
-      try {
-        outcomes.push({
-          kind: "written",
-          result: await this.setCartQuantity(item.sku, item.quantity, item.pricingUnit),
-        });
-      } catch (error: unknown) {
-        outcomes.push({
-          kind: "failed",
-          sku: item.sku,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
+    for (const [index, facts] of written.entries()) {
+      const item = items[index];
+      // Both lists are built from the same array, so an index always has an item.
+      if (item === undefined) throw new Error("Cart write results did not match the request.");
+      outcomes.push({
+        kind: "written",
+        result: await this.describeWrite(item.quantity, item.pricingUnit, facts),
+      });
     }
     return outcomes;
+  }
+
+  /**
+   * Turns what the site did into what the caller is told, naming any substitution.
+   *
+   * A variant the cart does not hold after the write is a quantity of zero: the mutation returns
+   * every line, so its absence from that list is the cart's answer, not a gap in reporting.
+   */
+  private async describeWrite(
+    requestedQuantity: number,
+    requestedPricingUnit: PricingUnit,
+    facts: CartWriteFacts,
+  ): Promise<CartWriteResult> {
+    const appliedQuantity = facts.appliedQuantity ?? 0;
+    // With no line in the cart there is no unit to observe, so the request's own unit is used to
+    // word the comparison. That cannot invent a substitution: with nothing held, the only
+    // difference the note can report is the quantity, which is the zero above.
+    const appliedPricingUnit = facts.appliedPricingUnit ?? requestedPricingUnit;
+    const adjustment = toCartAdjustment(
+      requestedQuantity,
+      appliedQuantity,
+      requestedPricingUnit,
+      appliedPricingUnit,
+      // Only fetched when the site changed something, so the common path stays one call.
+      adjustmentDiffers(
+        requestedQuantity,
+        appliedQuantity,
+        requestedPricingUnit,
+        appliedPricingUnit,
+      )
+        ? await this.quantityIncrementOf(facts.sku)
+        : undefined,
+    );
+    const isRemoval = requestedQuantity === 0;
+    return {
+      sku: facts.sku,
+      variantKey: facts.variantKey,
+      requestedQuantity,
+      requestedPricingUnit: isRemoval ? undefined : requestedPricingUnit,
+      appliedQuantity,
+      appliedPricingUnit: isRemoval ? undefined : appliedPricingUnit,
+      adjusted: adjustment.adjusted,
+      adjustment: adjustment.note,
+      lineInCart: appliedQuantity > 0,
+      cartTotalQuantity: facts.cartTotalQuantity,
+      cartLineCount: facts.cartLineCount,
+      checkoutBlocked: facts.checkoutBlocked,
+      blockers: facts.blockers,
+    };
+  }
+
+  /**
+   * The step this product is sold in, used only to word an adjustment note.
+   *
+   * A failure here must not fail the write, which has already happened upstream: the quantity is
+   * in the cart either way, and throwing would report a completed write as a failed one. The note
+   * loses its explanation and the adjustment itself is still reported in full.
+   */
+  private async quantityIncrementOf(sku: string): Promise<number | undefined> {
+    try {
+      return (await this.getProduct(sku)).quantityIncrement;
+    } catch (error: unknown) {
+      console.error(`[woolies-mcp] could not read the quantity step for ${sku}:`, error);
+      // eslint-disable-next-line no-restricted-syntax -- throwing would fail an already-applied write.
+      return undefined;
+    }
   }
 
   /**
    * The shopper's previously purchased products, returned as the site's own labelled sections.
    * The sections are never merged: one is real history and one is advertising.
    */
-  async getPastPurchases(): Promise<readonly PurchaseSection[]> {
-    await this.requireSignedIn();
-    const payload = await this.accountGet("products/my/forgotten");
-    const parsed = parseResponse(
-      forgottenProductsResponseSchema,
-      payload,
-      "/products/my/forgotten",
-    );
-    return parsed.products.map(toPurchaseSection);
+  async getBuyItAgain(page = 1, pageSize = DEFAULT_PAGE_SIZE): Promise<PastPurchases> {
+    const data = await this.cart.searchPastPurchases(page, pageSize);
+    const mapped = toPastPurchases(data.My.products, page);
+    if (mapped.rejections.length > 0) {
+      console.error(
+        `[woolies-mcp] ${mapped.rejections.length} previously purchased product(s) did not parse: ` +
+          mapped.rejections.join(" | "),
+      );
+    }
+    // The mapper's own coverage is kept: it refuses the completeness claim the generic builder
+    // would make, because this list is the retailer's selection rather than the full history.
+    // `rejections` is for the server log above, not for the caller.
+    return {
+      returned: mapped.returned,
+      matchesAvailable: mapped.matchesAvailable,
+      page: mapped.page,
+      complete: mapped.complete,
+      coverage: mapped.coverage,
+      products: mapped.products,
+      advertisingExcluded: mapped.advertisingExcluded,
+    };
+  }
+
+  /** The account's saved delivery addresses, and which one the cart is using. */
+  async listAddresses(): Promise<readonly SavedAddress[]> {
+    return toSavedAddresses((await this.cart.listAddresses()).me?.addresses ?? []);
   }
 
   /**
-   * `orders/my/past` is the base for order-change actions and 404s on GET; the list lives at
-   * `shoppers/my/past-orders`.
+   * Moves the cart to one of the account's saved delivery addresses.
+   *
+   * Only an address the account already holds: this cannot invent a location, and it books
+   * nothing — the site clears any chosen window and asks for a new one, which the returned
+   * fulfilment reports.
    */
-  async getOrderHistory(): Promise<OrderHistory> {
-    await this.requireSignedIn();
-    const payload = await this.accountGet("shoppers/my/past-orders");
-    const parsed = parseResponse(pastOrdersResponseSchema, payload, "/shoppers/my/past-orders");
-    return toOrderHistory(parsed.items, parsed.totalItems);
+  async setLocation(deliveryAddressId: string): Promise<Fulfilment> {
+    const known = await this.listAddresses();
+    if (!known.some((address) => address.id === deliveryAddressId)) {
+      throw new UnknownAddressError(deliveryAddressId, known);
+    }
+    const moved = (await this.cart.setShoppingMode(deliveryAddressId)).setCartShoppingMode;
+    this.forgetStoreKey();
+    return toFulfilment(moved, await this.storeKey());
   }
-}
 
-function exactMatch(matches: readonly SuburbMatch[], suburb: string): SuburbMatch | undefined {
-  const wanted = suburb.trim().toLowerCase();
-  return matches.find((match) => match.name.trim().toLowerCase() === wanted);
+  /**
+   * The delivery and pick-up windows offered where the cart is being delivered, or at a pick-up
+   * location.
+   *
+   * A read. Choosing a window is `setCartFulfilment`, which is deliberately unbound: this server
+   * fills a cart and a person finishes the shop.
+   */
+  async getDeliveryWindows(
+    options: {
+      readonly locationId?: string;
+      readonly availableOnly?: boolean;
+      readonly method?: string;
+      readonly limit?: number;
+    } = {},
+  ): Promise<DeliveryWindows> {
+    const variables = await this.deliveryWindowsFor(options.locationId);
+    const data = await this.cart.searchDeliveryWindows(variables);
+    return toDeliveryWindows(
+      data.propositions.propositions,
+      options.availableOnly ?? true,
+      options.method,
+      options.limit ?? DEFAULT_WINDOW_LIMIT,
+    );
+  }
+
+  /**
+   * Where to ask about windows. With no pick-up location the cart's own delivery coordinates are
+   * used, so the answer is for where this shop is actually going.
+   */
+  private async deliveryWindowsFor(
+    locationId: string | undefined,
+  ): Promise<DeliveryWindowsVariables> {
+    if (locationId !== undefined) return { input: { locationId } };
+    const coordinates = (await this.cart.read()).raw.shoppingMode.deliveryAddress?.coordinates;
+    if (coordinates === null || coordinates === undefined) {
+      throw new Error(
+        "The cart has no delivery address, so there is nowhere to ask about delivery windows. " +
+          "Pass a pick-up locationId, or set a delivery address on the website.",
+      );
+    }
+    return { input: { coordinates } };
+  }
+
+  /**
+   * The account's orders. `PAST` is completed orders, `ACTIVE` those still in flight; the site
+   * offers no other filter value in captured traffic, so no other is exposed.
+   *
+   * No page is accepted. The site ignores `pageIndex`: asking for page 2 or 3 of a seven-order
+   * history returns the same seven orders, so a page argument could only ever mislabel one page
+   * as another. What the site will not hand over is reported as unreachable, not paged for.
+   */
+  async getOrderHistory(
+    filter: OrderFilter = "PAST",
+    pageSize = ORDER_PAGE_SIZE,
+  ): Promise<OrderHistory> {
+    const data = await this.cart.searchOrders(1, pageSize, filter);
+    return toOrderHistory(data.orders, filter);
+  }
+
+  /**
+   * What each past order actually contained.
+   *
+   * Distinct from `getBuyItAgain`: that is a list the retailer curates and orders by frequency,
+   * this is the orders themselves. Paged the same way orders are, which is to say not at all.
+   */
+  async getPurchaseHistory(
+    filter: OrderFilter = "PAST",
+    pageSize = ORDER_PAGE_SIZE,
+  ): Promise<PurchaseHistory> {
+    const data = await this.cart.searchOrderLineItems(1, pageSize, filter);
+    return toPurchaseHistory(data.orders, filter);
+  }
 }
 
 /** Raised when an account operation is asked for without a usable account. */

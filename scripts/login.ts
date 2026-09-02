@@ -13,11 +13,32 @@
 
 import { writeFile } from "node:fs/promises";
 import { chromium, type BrowserContext } from "playwright";
+import { browserFetch } from "./browser-fetch.js";
+import { NotSignedInError } from "../src/woolworths/auth.js";
+import {
+  FetchGraphQlTransport,
+  SessionGraphQlTransport,
+} from "../src/woolworths/graphql-client.js";
+import {
+  CART_READ_DOCUMENT,
+  CART_READ_OPERATION,
+  IDENTITY_DOCUMENT,
+  IDENTITY_OPERATION,
+} from "../src/woolworths/graphql-documents.js";
+import { cartReadResponseSchema } from "../src/woolworths/schemas.js";
+import { Session, SITE_ORIGIN } from "../src/woolworths/session.js";
+import { Throttle } from "../src/woolworths/throttle.js";
 
+/**
+ * Where the browser is pointed to start OIDC. A page to navigate to, not an API this server
+ * integrates with: nothing reads its response, and the sign-in that follows happens entirely in
+ * the browser. It is the site's own entry point and has no `/api/graphql` equivalent.
+ */
 const START = "https://www.woolworths.co.nz/api/v1.0/bff/initiate-oidc-signin";
 const SITE = "https://www.woolworths.co.nz";
-const SIGNED_IN_CHECK = `${SITE}/api/v1/bff/get-user`;
 const SESSION_FILE = "session.json";
+/** A Next.js route; loading one is what mints the cookies `/api/graphql` authenticates on. */
+const NEXT_PAGE = "/cart";
 const WAIT_FOR_SIGN_IN_MS = 5 * 60 * 1000;
 
 interface ExportedCookie {
@@ -53,41 +74,141 @@ async function main(): Promise<void> {
   await writeFile(SESSION_FILE, JSON.stringify({ cookies }, null, 2), { mode: 0o600 });
   console.log(`\nSigned in. Captured ${cookies.length} cookies, saved to ${SESSION_FILE}.`);
 
+  const usable = await verifyCapture(cookies);
+
   if (server === undefined) {
     console.log("No --server given, so the session was only saved locally.");
-    return;
+  } else {
+    await handOver(server, cookies);
   }
 
-  await handOver(server, cookies);
+  if (!usable) {
+    fail("The captured session does not work. Nothing downstream will, either.");
+  }
 }
 
-/** Polls the site's own signed-in check, which is what the server will use too. */
+/**
+ * Waits for the browser to finish signing in.
+ *
+ * `me` on `/api/graphql` is the signal, and the only one. The legacy `bff/get-user` was polled
+ * alongside it until it reported `isLoggedIn: false` in the same poll that `me` returned a
+ * customer id — it answers for a session the site's migration left behind, so it can only ever
+ * disagree or agree by luck.
+ *
+ * Only a signal the site states plainly counts as "not yet". Anything it cannot answer —
+ * unreachable, an HTTP error, an unrecognised payload, an unexpected GraphQL error — throws.
+ * Returning false there is how this script waited out five minutes on a sign-in that had already
+ * succeeded, and reported a broken signal as a shopper who never signed in.
+ */
 async function waitForSignIn(context: BrowserContext): Promise<boolean> {
   const deadline = Date.now() + WAIT_FOR_SIGN_IN_MS;
-  process.stdout.write("Waiting for sign-in");
+  let lastDetail = "(nothing observed yet)";
+  let polls = 0;
+
+  console.log("Waiting for sign-in. What the site reports, every 20 seconds:");
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    process.stdout.write(".");
-    const response = await context.request
-      .get(SIGNED_IN_CHECK, { headers: { accept: "application/json" }, failOnStatusCode: false })
-      .catch(() => undefined);
-    if (!response?.ok()) continue;
-    const body: unknown = await response.json().catch(() => undefined);
-    if (isSignedIn(body)) {
-      process.stdout.write("\n");
+
+    const graph = await readGraphQlMe(context);
+    lastDetail = `graphql me: ${graph.detail}`;
+    // Every tenth poll, so the output is readable but never silent for long.
+    if (polls % 10 === 0) console.log(`  ${lastDetail}`);
+    polls += 1;
+
+    if (graph.signedIn) {
+      console.log(`  ${lastDetail}`);
       return true;
     }
   }
-  process.stdout.write("\n");
+  console.error(`\nGave up waiting. The last thing the site said was:\n  ${lastDetail}`);
   return false;
 }
 
-function isSignedIn(body: unknown): boolean {
-  if (typeof body !== "object" || body === null) return false;
-  const record = body as Record<string, unknown>;
-  // The BFF reports the shopper once the session is real; anonymous sessions have no email.
-  const candidates = [record["email"], record["userId"], record["firstName"]];
-  return candidates.some((value) => typeof value === "string" && value.length > 0);
+/** A signal the site stated plainly: signed in, or anonymous. Anything else throws. */
+interface SignInSignal {
+  readonly signedIn: boolean;
+  readonly detail: string;
+}
+
+/**
+ * The signal that matters: `me` is banned for guests, so resolving it proves the browser holds a
+ * real account session. It is the same field the cart tools are guarded by, sent through the same
+ * client — so an `errors` array becomes an exception here exactly as it does in the server.
+ *
+ * The Next.js session is minted first. `/api/graphql` authenticates on `__session__0` /
+ * `__session__1`, which only a Next.js page sets; a browser signed in on the old storefront has
+ * never been issued them, and asking before the exchange reports a signed-in shopper as a guest.
+ */
+async function readGraphQlMe(context: BrowserContext): Promise<SignInSignal> {
+  await mintNextSession(context);
+
+  const transport = new FetchGraphQlTransport(browserFetch(context));
+  try {
+    const data = await transport.send(IDENTITY_OPERATION, IDENTITY_DOCUMENT, {});
+    const id = data.me?.id;
+    if (typeof id === "string" && id.length > 0) return { signedIn: true, detail: `me.id ${id}` };
+    // No errors and no id: the operation resolved to something this script does not understand.
+    throw new Error(`/api/graphql resolved ${IDENTITY_OPERATION} with no me.id.`);
+  } catch (error: unknown) {
+    // The site refusing `me` to an anonymous caller is the plainly stated "not signed in".
+    if (error instanceof NotSignedInError) {
+      return { signedIn: false, detail: "guest — the site refuses `me` to anonymous callers" };
+    }
+    throw error;
+  }
+}
+
+/**
+ * Loads a Next.js page so the site exchanges the sign-in cookies for `__session__0` /
+ * `__session__1`. Re-run on every poll: before sign-in the exchange yields a guest session, and
+ * the authenticated pair is only issued once the sign-in has actually happened.
+ */
+async function mintNextSession(context: BrowserContext): Promise<void> {
+  const response = await context.request.get(`${SITE_ORIGIN}${NEXT_PAGE}`, {
+    headers: { accept: "text/html" },
+    failOnStatusCode: false,
+  });
+  if (!response.ok()) {
+    throw new Error(
+      `${NEXT_PAGE} answered HTTP ${response.status()}, so no GraphQL session was minted.`,
+    );
+  }
+}
+
+/**
+ * Proves the captured cookies actually work, by making the call the tools make.
+ *
+ * One check, because there is one API: everything this server does goes through
+ * `/api/graphql`, and a cart read is the call that also proves the site is not answering as a
+ * guest. There is no second half left to disagree with it.
+ */
+async function verifyCapture(cookies: readonly ExportedCookie[]): Promise<boolean> {
+  console.log("\nChecking the captured session against the site.");
+  const session = new Session();
+  await session.bootstrap();
+  await session.importCookies(cookies);
+
+  const result = await readCart(session);
+  console.log(`  cart (/api/graphql):  ${result}`);
+  return result.startsWith("OK");
+}
+
+/**
+ * `customerCart` answers an unauthenticated caller with an empty guest cart at HTTP 200, so the
+ * read selects `me` and this reports what that proved rather than that a request succeeded.
+ */
+async function readCart(session: Session): Promise<string> {
+  try {
+    const transport = new SessionGraphQlTransport(session, new Throttle(1_000));
+    const data = await transport.send(CART_READ_OPERATION, CART_READ_DOCUMENT, {});
+    const parsed = cartReadResponseSchema.parse(data);
+    if (parsed.me === null) return "NOT SIGNED IN — the site served a guest cart.";
+    const cart = parsed.customerCart;
+    return `OK — ${cart.lineItems.length} lines, ${cart.totalItemQuantity} items.`;
+  } catch (error: unknown) {
+    if (error instanceof NotSignedInError) return "NOT SIGNED IN — the site served a guest cart.";
+    return `FAILED — ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`;
+  }
 }
 
 /** Renders Playwright's cookies as Set-Cookie strings the server's jar can absorb. */

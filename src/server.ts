@@ -6,7 +6,6 @@ import { registerProductTools } from "./tools/products.js";
 import { registerStoreTools } from "./tools/stores.js";
 import { WoolworthsApi } from "./woolworths/api.js";
 import { Authenticator } from "./woolworths/auth.js";
-import { WoolworthsClient, type ClientOptions } from "./woolworths/client.js";
 import { Session, type SessionOptions } from "./woolworths/session.js";
 
 export const SERVER_NAME = "woolies-mcp";
@@ -14,14 +13,12 @@ export const SERVER_VERSION = "0.1.0";
 
 export interface ServerOptions {
   readonly session?: SessionOptions;
-  readonly client?: ClientOptions;
 }
 
 /** One Woolworths session and the API built on it, shared by every tool in a server instance. */
 export function createWoolworthsApi(options: ServerOptions = {}): WoolworthsApi {
   const session = new Session(options.session ?? {});
-  const client = new WoolworthsClient(session, options.client ?? {});
-  return new WoolworthsApi(client, new Authenticator());
+  return new WoolworthsApi(session, new Authenticator());
 }
 
 /**
@@ -33,9 +30,10 @@ export function createServer(api: WoolworthsApi = createWoolworthsApi()): McpSer
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
       instructions:
-        "Read-only access to woolworths.co.nz (New Zealand). Prices and availability are per " +
-        "delivery location: the session starts at a default store, so call get_location to see " +
-        "where it is shopping and set_location to move it before quoting prices.",
+        "Shops woolworths.co.nz (New Zealand) for one signed-in household: reads the catalogue " +
+        "and fills the cart. It never places an order, pays, or books a delivery window. Prices " +
+        "and availability are for the address the cart is being delivered to, so call " +
+        "get_location before quoting either.",
     },
   );
 

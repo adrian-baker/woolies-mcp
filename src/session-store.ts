@@ -116,9 +116,11 @@ export async function restoreStoredSession(
     );
     return;
   }
-  const status = await api.importSession(cookies);
+  // One probe, not two: `importSession` already makes the account call that demonstrates access,
+  // and asking again cost a second throttled round trip at every start-up for the same answer.
+  const access = await api.importSession(cookies);
   console.error(
-    `[${serverName}] restored session from ${store.location}: signedIn=${status.signedIn}` +
-      (status.signedIn ? "" : " (expired — run `npm run login` again)"),
+    `[${serverName}] restored session from ${store.location}: accountToolsUsable=${access.usable}` +
+      (access.usable ? "" : " (run `npm run login` again)"),
   );
 }

@@ -2,19 +2,12 @@ import { CookieJar } from "tough-cookie";
 
 export const SITE_ORIGIN = "https://www.woolworths.co.nz";
 
-/** Trailing slash is load-bearing: `new URL("products", API_BASE)` must keep the `/api/v1/` prefix. */
-export const API_BASE = new URL("/api/v1/", SITE_ORIGIN);
-
 /**
- * The edge (Akamai) answers 400 to anything that does not look like a browser, so the UA is
- * part of the protocol rather than decoration. See DESIGN.md, "Session requirements".
+ * The edge (Akamai) answers 400 to anything that does not look like a browser, so the UA is part
+ * of the protocol rather than decoration.
  */
 export const BROWSER_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
-
-/** Sent on every API call alongside the UA and cookie jar; without it the API answers 400. */
-export const API_REQUEST_HEADER = "x-requested-with";
-export const API_REQUEST_HEADER_VALUE = "OnlineShopping.WebApp";
 
 const MAX_REDIRECTS = 5;
 /** The sign-in chain crosses www -> auth -> iam -> www and needs far more hops than an API call. */
@@ -63,8 +56,8 @@ export class Session {
   /**
    * Re-runs the bootstrap after the site rejects a call, keeping every cookie.
    *
-   * Discarding the jar here turned one 400 into a permanent sign-out: the `cw-*`, Keycloak and
-   * Auth0 cookies are the sign-in, and nothing reloads them afterwards. The edge cookies the
+   * The jar is kept: the `cw-*`, Keycloak and Auth0 cookies are the sign-in and nothing reloads
+   * them afterwards, so discarding them here is a permanent sign-out. The edge cookies the
    * bootstrap needs are reissued by Set-Cookie; on a live authenticated call only
    * `akavpau_vpwww` was observed rotating.
    */
@@ -76,6 +69,12 @@ export class Session {
   async hasCookies(): Promise<boolean> {
     const cookies = await this.jar.getCookies(SITE_ORIGIN);
     return cookies.length > 0;
+  }
+
+  /** The names of the cookies the jar holds for the site. */
+  async cookieNames(): Promise<readonly string[]> {
+    const cookies = await this.jar.getCookies(SITE_ORIGIN);
+    return cookies.map((cookie) => cookie.key);
   }
 
   /**
@@ -151,14 +150,28 @@ export class Session {
     return response;
   }
 
+  /**
+   * Rejections already reported, by host and reason. The site sets a third-party cookie on every
+   * request, so logging each one buries the log; the first of each kind is enough to diagnose a
+   * broken session, and a new kind still surfaces.
+   */
+  private readonly reportedCookieRejections = new Set<string>();
+
   private async absorbCookies(url: URL, response: Response): Promise<void> {
     for (const setCookie of response.headers.getSetCookie()) {
       try {
         await this.jar.setCookie(setCookie, url.href);
       } catch (error: unknown) {
         // A cookie the jar rejects (bad domain, malformed attributes) is not fatal: the session
-        // survives on the rest. Record it so a broken session is diagnosable.
-        console.error(`[woolies-mcp] ignoring unusable Set-Cookie from ${url.host}:`, error);
+        // survives on the rest. Recorded so a broken session is diagnosable.
+        const reason = error instanceof Error ? error.message : String(error);
+        const kind = `${url.host}: ${reason}`;
+        if (this.reportedCookieRejections.has(kind)) continue;
+        this.reportedCookieRejections.add(kind);
+        console.error(
+          `[woolies-mcp] ignoring unusable Set-Cookie from ${url.host}: ${reason} ` +
+            "(further identical rejections are not repeated)",
+        );
       }
     }
   }
@@ -180,8 +193,8 @@ function mergeHeaders(cookie: string, overrides: RequestInit["headers"]): Header
 }
 
 /**
- * 307 and 308 require the method and body to be preserved. Downgrading them to a bare GET dropped
- * the body and `x-requested-with`, which the API answers 400, which used to destroy the session.
+ * 307 and 308 require the method and body to be preserved; downgrading them to a bare GET drops
+ * the body and destroys the session.
  * 301, 302 and 303 are followed as GET, as browsers do. Caller headers cross an origin boundary
  * only when the origin does not change.
  */
