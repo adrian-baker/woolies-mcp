@@ -31,6 +31,7 @@ import {
   toDeliveryWindow,
   toDeliveryWindows,
   toProductDetail,
+  toOrderHistory,
 } from "../src/woolworths/mappers.js";
 import {
   cartReadResponseSchema,
@@ -594,6 +595,83 @@ check(
   wrongMethod.windows.length === 0 && wrongMethod.coverage.includes("'pickup'"),
   wrongMethod.coverage.slice(0, 120),
 );
+
+console.log("\norder history shapes");
+{
+  const delivery = {
+    orderNumber: "CD00000001",
+    createdDateTime: "2026-09-01T09:19:48.213Z",
+    orderStatus: "COMPLETED",
+    fulfilmentStatus: "COMPLETED",
+    hasInvoice: true,
+    isAmendable: false,
+    total: { afterDiscountInCents: 1234 },
+    fulfilments: [
+      {
+        method: "delivery",
+        startTime: "2026-09-01T22:00:00.000Z",
+        endTime: "2026-09-02T00:30:00.000Z",
+        fulfilmentLocation: { name: "Northwest Woolworths" },
+        address: {
+          lines: {
+            line1: "1 Example Road",
+            line2: "Suburb",
+            line3: null,
+            line4: null,
+            line5: null,
+          },
+        },
+      },
+    ],
+  };
+  // Reported from an account holding pick-up orders: the site states neither the store nor a
+  // delivery address on them.
+  const pickup = {
+    ...delivery,
+    orderNumber: "CD00000002",
+    fulfilments: [
+      {
+        method: "pickup",
+        startTime: "2026-09-01T22:00:00.000Z",
+        endTime: "2026-09-02T00:30:00.000Z",
+        fulfilmentLocation: null,
+        address: null,
+      },
+    ],
+  };
+  const both = toOrderHistory({ results: [delivery, pickup], totalCount: 2 }, "PAST");
+  check(
+    "an order stating no store or address is still listed",
+    both.returned === 2 && both.unparsed.length === 0,
+    `${both.returned} orders, ${both.unparsed.length} unreadable`,
+  );
+  check(
+    "its missing store is named, never rendered as an empty name",
+    both.orders[1]?.fulfilments[0]?.location === undefined &&
+      both.orders[1]?.fulfilments[0]?.notReported.includes("location") === true,
+    (both.orders[1]?.fulfilments[0]?.notReported ?? []).join(", "),
+  );
+  // One unreadable order must cost that order, not the whole history.
+  const withJunk = toOrderHistory(
+    { results: [delivery, { orderNumber: "CD00000003" }], totalCount: 2 },
+    "PAST",
+  );
+  check(
+    "an unreadable order costs that order, not the response",
+    withJunk.returned === 1 && withJunk.unparsed.length === 1,
+    `${withJunk.returned} listed, ${withJunk.unparsed.length} unreadable`,
+  );
+  check(
+    "the unreadable order is named with its reference and reason",
+    withJunk.unparsed[0]?.startsWith("CD00000003:") === true,
+    withJunk.unparsed[0]?.slice(0, 72) ?? "(none)",
+  );
+  check(
+    "and the result never claims to be complete",
+    !withJunk.complete && withJunk.coverage.includes("could not read"),
+    `complete=${String(withJunk.complete)}`,
+  );
+}
 
 console.log("\nbatched search");
 {

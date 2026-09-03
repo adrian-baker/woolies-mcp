@@ -351,28 +351,38 @@ export const orderSchema = z.object({
       method: z.string(),
       startTime: z.string(),
       endTime: z.string(),
-      fulfilmentLocation: z.object({ name: z.string() }),
-      address: z.object({
-        lines: z.object({
-          line1: nullableString,
-          line2: nullableString,
-          line3: nullableString,
-          line4: nullableString,
-          line5: nullableString,
-        }),
-      }),
+      // Null on some orders — reported from an account holding pick-up orders, which this
+      // account has none of. A missing store is carried through as not stated, never as "".
+      fulfilmentLocation: z.object({ name: z.string() }).nullable(),
+      // Nullable for the same reason: an order collected from a store has no delivery address.
+      address: z
+        .object({
+          lines: z.object({
+            line1: nullableString,
+            line2: nullableString,
+            line3: nullableString,
+            line4: nullableString,
+            line5: nullableString,
+          }),
+        })
+        .nullable(),
     }),
   ),
 });
 export type RawOrder = Readonly<z.infer<typeof orderSchema>>;
 
+/**
+ * The envelope only. Each order is parsed separately by the mapper so one order the server
+ * cannot read costs that order, not the whole history: a single unfamiliar fulfilment shape
+ * otherwise answers "you have no orders", which is a fact about the account and would be wrong.
+ */
 export const ordersResponseSchema = z.object({
   orders: z.object({
     totalCount: z.number(),
     totalPages: z.number(),
     pageSize: z.number(),
     currentPage: z.number(),
-    results: z.array(orderSchema),
+    results: z.array(z.unknown()),
   }),
 });
 export type RawOrdersResponse = Readonly<z.infer<typeof ordersResponseSchema>>;

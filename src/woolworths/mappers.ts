@@ -1,5 +1,5 @@
 import type { ZodError } from "zod";
-import { productSummarySchema, searchProductSchema } from "./schemas.js";
+import { orderSchema, productSummarySchema, searchProductSchema } from "./schemas.js";
 import type {
   RawOrder,
   RawPurchaseHistoryResponse,
@@ -1206,10 +1206,13 @@ function explainQuantityChange(
 
 export interface OrderFulfilment {
   readonly method: string;
-  readonly location: string;
+  /** The store fulfilling it. Absent when the site did not state one, never "". */
+  readonly location: string | undefined;
   readonly startTime: string;
   readonly endTime: string;
   readonly address: string | undefined;
+  /** Names `location` or `address` when the site did not state them, so absence is not read as a fact. */
+  readonly notReported: readonly string[];
 }
 
 export interface PastOrder {
@@ -1233,6 +1236,11 @@ export interface OrderHistory {
   readonly matchesAvailable: number;
   readonly complete: boolean;
   readonly coverage: string;
+  /**
+   * Orders the site returned that this server could not describe, named with the reason. Reported
+   * rather than dropped: a short list and a list the server could not read are different answers.
+   */
+  readonly unparsed: readonly string[];
   readonly orders: readonly PastOrder[];
 }
 
@@ -1312,13 +1320,22 @@ export function toPastOrder(order: RawOrder): PastOrder {
     total: formatCents(order.total.afterDiscountInCents),
     isAmendable: order.isAmendable,
     hasInvoice: order.hasInvoice,
-    fulfilments: order.fulfilments.map((fulfilment) => ({
-      method: fulfilment.method,
-      location: fulfilment.fulfilmentLocation.name,
-      startTime: fulfilment.startTime,
-      endTime: fulfilment.endTime,
-      address: joinAddressLines(fulfilment.address.lines),
-    })),
+    fulfilments: order.fulfilments.map((fulfilment) => {
+      const location = optionalText(fulfilment.fulfilmentLocation?.name);
+      const address =
+        fulfilment.address === null ? undefined : joinAddressLines(fulfilment.address.lines);
+      return {
+        method: fulfilment.method,
+        location,
+        startTime: fulfilment.startTime,
+        endTime: fulfilment.endTime,
+        address,
+        notReported: [
+          ...(location === undefined ? ["location"] : []),
+          ...(address === undefined ? ["address"] : []),
+        ],
+      };
+    }),
   };
 }
 
@@ -1338,29 +1355,56 @@ function joinAddressLines(
  * in instead.
  */
 export function toOrderHistory(
-  page: Readonly<{ results: readonly RawOrder[]; totalCount: number }>,
+  page: Readonly<{ results: readonly unknown[]; totalCount: number }>,
   filter: string,
 ): OrderHistory {
-  const returned = page.results.length;
+  // Each order is parsed on its own. One order in an unfamiliar shape costs that order and is
+  // named; rejecting the whole response would report an account's history as empty.
+  const orders: RawOrder[] = [];
+  const unparsed: string[] = [];
+  for (const [index, raw] of page.results.entries()) {
+    const parsed = orderSchema.safeParse(raw);
+    if (parsed.success) {
+      orders.push(parsed.data);
+      continue;
+    }
+    const reference =
+      typeof raw === "object" &&
+      raw !== null &&
+      typeof (raw as { orderNumber?: unknown }).orderNumber === "string"
+        ? (raw as { orderNumber: string }).orderNumber
+        : `results[${index}]`;
+    unparsed.push(
+      `${reference}: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "<root>"} ${issue.message}`).join("; ")}`,
+    );
+  }
+  const returned = orders.length;
   const noun = `${filter.toLowerCase()} orders`;
   const coherent = page.totalCount >= 0 && returned <= page.totalCount;
+  const unparsedNote =
+    unparsed.length === 0
+      ? ""
+      : ` ${unparsed.length} further ${unparsed.length === 1 ? "order was" : "orders were"} ` +
+        `returned by the site in a shape this server could not read and ${unparsed.length === 1 ? "is" : "are"} ` +
+        `missing from the list — see \`unparsed\`. The count above is short for that reason.`;
   return {
     returned,
     matchesAvailable: page.totalCount,
+    unparsed,
     // The site ignores `pageIndex`, so this response is everything it will hand over. Complete
     // means complete of what the site offers, which is not the same as the account's whole
     // history: it returns a recent window and states no start date for it.
-    complete: coherent && returned === page.totalCount,
+    complete: coherent && returned === page.totalCount && unparsed.length === 0,
     coverage: !coherent
       ? `Showing ${returned} ${noun}, but the site reported ${page.totalCount} as the total, ` +
-        `which cannot be right. Treat neither number as the size of this account's history.`
+        `which cannot be right. Treat neither number as the size of this account's history.${unparsedNote}`
       : returned === page.totalCount
         ? `All ${returned} ${noun} the site offers. It returns a recent window and does not say ` +
           `how far back it reaches, so an order's absence here is not evidence it was never ` +
-          `placed. There are no further pages: the site ignores the page index.`
+          `placed. There are no further pages: the site ignores the page index.${unparsedNote}`
         : `Showing ${returned} of ${page.totalCount} ${noun}. The remaining ` +
           `${page.totalCount - returned} cannot be fetched: the site ignores the page index, so ` +
-          `every page returns this same set. Do not answer first/last/total-spend from these.`,
-    orders: page.results.map(toPastOrder),
+          `every page returns this same set. Do not answer first/last/total-spend from these.${unparsedNote}`,
+    orders: orders.map(toPastOrder),
   };
 }
