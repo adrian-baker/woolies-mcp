@@ -106,3 +106,215 @@ export class DyingGraphQlTransport extends FetchGraphQlTransport {
     return this.counts.writes;
   }
 }
+
+/**
+ * A product grid holding exactly the skus given, as the aliased pre-flight search asks for them.
+ *
+ * `unit` is what the site says the product is sold by; `ranged` false is a product the store
+ * does not carry, which the site reports as a null `variantPrice`.
+ */
+export function searchGridEnvelope(
+  aliases: readonly {
+    readonly alias: string;
+    readonly sku: string | undefined;
+    readonly unit?: string;
+    readonly ranged?: boolean;
+    /** A product sold both by weight and by the item carries two variants. */
+    readonly alsoEach?: boolean;
+  }[],
+): string {
+  const My: Record<string, unknown> = {};
+  for (const entry of aliases) {
+    const results =
+      entry.sku === undefined
+        ? []
+        : [
+            {
+              __typename: "ProductSummary",
+              sku: entry.sku,
+              productName: `Product ${entry.sku}`,
+              brand: null,
+              slug: `product-${entry.sku}`,
+              storeKey: "9583",
+              categoryHierarchyNames: { lvl1: ["Pantry"] },
+              variants: [
+                {
+                  variantKey: `${entry.sku}-${entry.unit === "KG" ? "KG" : "EA"}`,
+                  name: `Product ${entry.sku}`,
+                  unitOfMeasure: entry.unit ?? "EACH",
+                  availabilityStatus: "IN_STOCK",
+                  purchaseUnit: {
+                    unit: entry.unit ?? "EACH",
+                    minimumQty: 1,
+                    maximumQty: 99,
+                    incrementQty: 1,
+                    defaultQty: 1,
+                  },
+                  variantPrice:
+                    entry.ranged === false
+                      ? null
+                      : {
+                          sellingPrice: 1,
+                          wasPrice: null,
+                          savedAmount: null,
+                          cupPrice: null,
+                          cupUnit: null,
+                          isSpecial: false,
+                          isClubPrice: false,
+                        },
+                },
+                ...(entry.alsoEach === true
+                  ? [
+                      {
+                        variantKey: `${entry.sku}-EA`,
+                        name: `Product ${entry.sku}`,
+                        unitOfMeasure: "EACH",
+                        availabilityStatus: "IN_STOCK",
+                        purchaseUnit: {
+                          unit: "EACH",
+                          minimumQty: 1,
+                          maximumQty: 99,
+                          incrementQty: 1,
+                          defaultQty: 1,
+                        },
+                        variantPrice: {
+                          sellingPrice: 1,
+                          wasPrice: null,
+                          savedAmount: null,
+                          cupPrice: null,
+                          cupUnit: null,
+                          isSpecial: false,
+                          isClubPrice: false,
+                        },
+                      },
+                    ]
+                  : []),
+              ],
+            },
+          ];
+    My[entry.alias] = {
+      totalCount: results.length,
+      pageSize: results.length,
+      totalPages: 1,
+      currentPage: 0,
+      results,
+    };
+  }
+  return JSON.stringify({ data: { My } });
+}
+
+/** A cart-write response holding the lines given. */
+export function cartWriteEnvelope(
+  lines: readonly { readonly variantKey: string; readonly quantity: number }[],
+): string {
+  return JSON.stringify({
+    data: {
+      setCartLineItemQuantity: {
+        key: SIGNED_IN_CART_KEY,
+        totalItemQuantity: lines.length,
+        totalUniqueProductSku: lines.length,
+        validationResult: { isValid: true, failedValidations: [] },
+        checkout: { amountToPayAsCents: 0, chargeableTotalAsCents: 0, loyaltySpendAsCents: 0 },
+        pricing: {
+          orderSubtotal: {
+            beforeDiscountAsCents: 0,
+            afterDiscountAsCents: 0,
+            discountAmountAsCents: 0,
+          },
+          productSubtotal: {
+            beforeDiscountAsCents: 0,
+            afterDiscountAsCents: 0,
+            discountAmountAsCents: 0,
+          },
+          total: { beforeDiscountAsCents: 0, afterDiscountAsCents: 0, discountAmountAsCents: 0 },
+        },
+        lineItems: lines.map((line) => ({
+          sku: line.variantKey.split("-")[0] ?? line.variantKey,
+          productVariantSku: line.variantKey,
+          quantity: line.quantity,
+          lineTotal: { afterDiscountAsCents: 0, discountAmountAsCents: 0 },
+          unitPrice: { beforeDiscountAsCents: 0, afterDiscountAsCents: 0 },
+        })),
+      },
+    },
+  });
+}
+
+/** One product as `products(keys:, storeKey:)` returns it, or a null payload for an unknown key. */
+export function productDetailEnvelope(
+  product:
+    | undefined
+    | {
+        readonly sku: string;
+        readonly units: readonly string[];
+        readonly ranged?: boolean;
+      },
+): string {
+  if (product === undefined) return JSON.stringify({ data: null });
+  return JSON.stringify({
+    data: {
+      products: [
+        {
+          key: product.sku,
+          brand: null,
+          name: `Product ${product.sku}`,
+          slug: `product-${product.sku}`,
+          isLiquor: false,
+          isTobacco: false,
+          isOwnBrand: false,
+          variants: product.units.map((unit) => ({
+            __typename: "GroceryVariant",
+            key: `${product.sku}-${unit === "KG" ? "KG" : "EA"}`,
+            sku: product.sku,
+            barcode: null,
+            volumeSize: null,
+            richDescription: null,
+            countryOfOrigin: null,
+            ingredients: null,
+            allergenContained: null,
+            servingSize: null,
+            servingsPerPack: null,
+            directionsOfUse: null,
+            tgaWarnings: null,
+            productWarnings: null,
+            ageRestriction: null,
+            availabilityStatus: "IN_STOCK",
+            purchasingUnits: {
+              unit,
+              minimumQty: 1,
+              maximumQty: 99,
+              incrementQty: 1,
+              defaultQty: 1,
+            },
+            variantPrice:
+              product.ranged === false
+                ? null
+                : {
+                    sellingPrice: 1,
+                    wasPrice: null,
+                    savedAmount: null,
+                    cupPrice: null,
+                    cupUnit: null,
+                    isSpecial: false,
+                    isClubPrice: false,
+                  },
+            nutritionalInformation: null,
+            assets: [],
+          })),
+        },
+      ],
+    },
+  });
+}
+
+/** The refusal the site sends when a batch carries a line it will not take. */
+export function batchRefusalEnvelope(): string {
+  return JSON.stringify({
+    errors: [
+      {
+        message: "These items are no longer available at this store.",
+        extensions: { code: "ProductStoreRangingAvailability" },
+      },
+    ],
+  });
+}

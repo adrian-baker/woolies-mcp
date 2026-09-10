@@ -173,9 +173,12 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
       title: "Set several cart lines at once",
       description:
         `Set many products' cart lines in one call. ${CART_SEMANTICS} The whole list is sent to ` +
-        "the site as one write, so it is applied together or rejected together: if it is " +
-        "rejected every item is reported as failed with the same reason and nothing was " +
-        "changed. Each item is reported separately either way, so check every entry. Written " +
+        "the site as one write. If the site refuses it — it refuses a batch as a whole, and its " +
+        "reason names no sku — each item is then looked up and the ones that could not have " +
+        "been written are reported with why: no such sku, not sold at this store, or the wrong " +
+        "pricing unit. The rest are written, so one bad line costs that line and not the whole " +
+        "list. Results come back in the order asked, one entry per item, so check every entry. " +
+        "Written " +
         "entries carry requestedQuantity and appliedQuantity: where `adjusted` is true the site " +
         "substituted its own quantity and `adjustment` says how, so summarise what was actually " +
         `added. ${NEEDS_ACCOUNT}`,

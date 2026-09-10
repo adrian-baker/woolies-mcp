@@ -712,29 +712,137 @@ export class WoolworthsApi {
   }
 
   /**
+   * Works out which items of a rejected batch could not have been written.
+   *
+   * Run only after the site has refused a batch. The site rejects the list as a whole and its
+   * message names no sku, so each is looked up on its own: product detail answers whether the
+   * product exists, whether this store ranges it, and every unit it is sold in. A search cannot
+   * be used for this — some skus do not match themselves as a keyword — and looking them up
+   * before every write would refuse valid lines.
+   */
+  private async diagnose(
+    items: readonly { sku: string; quantity: number; pricingUnit: PricingUnit }[],
+  ): Promise<ReadonlyMap<string, string>> {
+    const rejected = new Map<string, string>();
+    for (const item of items) {
+      let detail: ProductDetail;
+      try {
+        detail = await this.getProduct(item.sku);
+      } catch (error: unknown) {
+        if (error instanceof UnknownProductError) {
+          rejected.set(
+            item.sku,
+            `No product ${item.sku} in the catalogue. Check the sku with search_products.`,
+          );
+          continue;
+        }
+        if (error instanceof UndescribableProductError) {
+          rejected.set(item.sku, `Product ${item.sku} could not be read: ${error.message}`);
+          continue;
+        }
+        throw error;
+      }
+      if (!detail.rangedAtStore) {
+        rejected.set(
+          item.sku,
+          `${detail.name} (${item.sku}) is not sold at the store this cart is served by, so it ` +
+            `cannot be added. That is about the store, not about stock.`,
+        );
+        continue;
+      }
+      const units = [...new Set(detail.variants.map((variant) => variant.unit))];
+      if (!units.includes(item.pricingUnit)) {
+        rejected.set(
+          item.sku,
+          `${detail.name} (${item.sku}) is sold by ${units.join(" and ")}, not ` +
+            `${item.pricingUnit}. Pass the product's purchasingUnit verbatim.`,
+        );
+      }
+    }
+    return rejected;
+  }
+
+  /**
    * Sets several products' lines in one mutation, which is how the site's own frontend batches
    * them.
    *
-   * The batch shares one outcome: the site applies the whole list or rejects it, so a rejection is
-   * reported against every requested sku rather than leaving the caller to guess which landed.
+   * The site applies the whole list or refuses it, and its refusal names no sku — one bad line
+   * therefore used to come back as every line failing for a reason that described none of them.
+   * A refused batch is now taken apart: each item is looked up, the ones that could not have been
+   * written are named with why, and the rest are sent again so a single bad line costs that line
+   * alone. Nothing is looked up unless the site has already refused, so a batch that works costs
+   * exactly one request, as before.
    */
   async setCartQuantities(
     items: readonly { sku: string; quantity: number; pricingUnit: PricingUnit }[],
   ): Promise<readonly CartWriteOutcome[]> {
-    let written: readonly CartWriteFacts[];
     try {
-      written = await this.cart.setQuantities(items);
+      return await this.describeBatch(items, await this.cart.setQuantities(items));
     } catch (error: unknown) {
-      // Only a rejection of the mutation itself means the cart is untouched. Anything else — a
-      // dead session, a cart key that did not match, a response this server could not read —
-      // happens around a write that may already have landed, and saying "nothing was changed"
-      // about it would invite the caller to send it again.
+      // Only a refusal of the mutation means the cart is untouched. Anything else — a dead
+      // session, a cart key that did not match, a response this server could not read — happens
+      // around a write that may already have landed, and "nothing was changed" would invite the
+      // caller to send it again.
       if (!(error instanceof GraphQlError)) throw error;
-      const reason =
-        `The batch was rejected as a whole, so no item in it was written. The site gave one ` +
-        `reason for the batch, which does not name which item caused it: ${error.message}`;
-      return items.map((item) => ({ kind: "failed" as const, sku: item.sku, reason }));
+
+      // A removal needs no catalogue entry: zeroing a line the store has stopped ranging must
+      // keep working, and that is exactly the line a shopper most needs to remove.
+      const rejected = await this.diagnose(items.filter((item) => item.quantity > 0));
+      const writable = items.filter((item) => !rejected.has(item.sku));
+
+      if (rejected.size === 0 || writable.length === 0) {
+        const reason =
+          rejected.size === 0
+            ? `The site refused the batch as a whole and named no item. Every item in it was ` +
+              `looked up afterwards and each looked writable, so the reason is something the ` +
+              `lookup cannot see: ${error.message}`
+            : `The site refused the batch as a whole: ${error.message}`;
+        return items.map((item) => ({
+          kind: "failed" as const,
+          sku: item.sku,
+          reason: rejected.get(item.sku) ?? reason,
+        }));
+      }
+
+      let written: readonly CartWriteFacts[];
+      try {
+        written = await this.cart.setQuantities(writable);
+      } catch (retryError: unknown) {
+        if (!(retryError instanceof GraphQlError)) throw retryError;
+        const reason =
+          `The site refused this batch twice: once with every item, and again with only the ` +
+          `items that looked writable. Its reason names no item: ${retryError.message}`;
+        return items.map((item) => ({
+          kind: "failed" as const,
+          sku: item.sku,
+          reason: rejected.get(item.sku) ?? reason,
+        }));
+      }
+      const outcomes = await this.describeBatch(writable, written);
+      const bySku = new Map(
+        outcomes.map((outcome) => [
+          outcome.kind === "written" ? outcome.result.sku : outcome.sku,
+          outcome,
+        ]),
+      );
+      // Reported in the order asked, so a caller can read its own list back.
+      return items.map((item) => {
+        const reason = rejected.get(item.sku);
+        if (reason !== undefined) return { kind: "failed" as const, sku: item.sku, reason };
+        const outcome = bySku.get(item.sku);
+        if (outcome === undefined) {
+          throw new Error(`No outcome was produced for ${item.sku}, which must never happen.`);
+        }
+        return outcome;
+      });
     }
+  }
+
+  /** Turns the site's per-line facts into the caller's outcomes, in the order asked. */
+  private async describeBatch(
+    items: readonly { sku: string; quantity: number; pricingUnit: PricingUnit }[],
+    written: readonly CartWriteFacts[],
+  ): Promise<readonly CartWriteOutcome[]> {
     const outcomes: CartWriteOutcome[] = [];
     for (const [index, facts] of written.entries()) {
       const item = items[index];

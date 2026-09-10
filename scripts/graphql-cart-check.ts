@@ -14,7 +14,22 @@
 import { Kind } from "graphql";
 import { NotSignedInError } from "../src/woolworths/auth.js";
 import { GraphQlCart, WrongCartError } from "../src/woolworths/graphql-cart.js";
-import { FetchGraphQlTransport, GraphQlError } from "../src/woolworths/graphql-client.js";
+import {
+  FetchGraphQlTransport,
+  GraphQlError,
+  readOperationName,
+} from "../src/woolworths/graphql-client.js";
+import { WoolworthsApi } from "../src/woolworths/api.js";
+import { Authenticator } from "../src/woolworths/auth.js";
+import { Session } from "../src/woolworths/session.js";
+import {
+  SIGNED_IN_CART_KEY,
+  batchRefusalEnvelope,
+  cartWriteEnvelope,
+  emptyCartEnvelope,
+  productDetailEnvelope,
+  searchGridEnvelope,
+} from "./cart-fixtures.js";
 import {
   CART_READ_DOCUMENT,
   CART_READ_OPERATION,
@@ -595,6 +610,92 @@ check(
   wrongMethod.windows.length === 0 && wrongMethod.coverage.includes("'pickup'"),
   wrongMethod.coverage.slice(0, 120),
 );
+
+console.log("\na refused batch");
+{
+  // The site refuses a batch as a whole and names no sku. Each item is looked up only after that
+  // refusal, so a working batch costs one request and a bad line costs that line alone.
+  const detail: Record<string, Parameters<typeof productDetailEnvelope>[0]> = {
+    "111": { sku: "111", units: ["EACH"] },
+    "222": undefined, // no such product
+    "333": { sku: "333", units: ["KG"] }, // asked for as EACH
+    "444": { sku: "444", units: ["EACH"], ranged: false },
+    "555": { sku: "555", units: ["KG", "EACH"] }, // sold both ways
+  };
+  let writes = 0;
+  let lookups = 0;
+  const transport = new FetchGraphQlTransport((_input, init) => {
+    const operation = readOperationName(init?.body);
+    const body = typeof init?.body === "string" ? init.body : "";
+    let payload: string;
+    if (operation === "CustomerCart") {
+      payload = emptyCartEnvelope(SIGNED_IN_CART_KEY, { id: SIGNED_IN_CART_KEY });
+    } else if (operation === "ProductDetail") {
+      lookups += 1;
+      const key = Object.keys(detail).find((sku) => body.includes(`"${sku}"`));
+      payload = productDetailEnvelope(key === undefined ? undefined : detail[key]);
+    } else if (operation === "ProductSearch") {
+      // The store key is discovered from a catalogue result before any product detail read.
+      payload = searchGridEnvelope([{ alias: "products", sku: "999", unit: "EACH" }]);
+    } else {
+      writes += 1;
+      payload =
+        writes === 1
+          ? batchRefusalEnvelope()
+          : cartWriteEnvelope([
+              { variantKey: "111-EA", quantity: 2 },
+              { variantKey: "555-EA", quantity: 1 },
+            ]);
+    }
+    return Promise.resolve(
+      new Response(payload, { status: 200, headers: { "content-type": "application/json" } }),
+    );
+  });
+  const api = new WoolworthsApi(
+    new Session(),
+    new Authenticator(),
+    Date.now,
+    new GraphQlCart(transport, 60_000),
+  );
+  const outcomes = await api.setCartQuantities([
+    { sku: "111", quantity: 2, pricingUnit: "EACH" },
+    { sku: "222", quantity: 1, pricingUnit: "EACH" },
+    { sku: "333", quantity: 1, pricingUnit: "EACH" },
+    { sku: "444", quantity: 1, pricingUnit: "EACH" },
+    { sku: "555", quantity: 1, pricingUnit: "EACH" },
+  ]);
+  const order = outcomes.map((o) => (o.kind === "written" ? o.result.sku : o.sku)).join(",");
+  check(
+    "results come back one per item, in the order asked",
+    outcomes.length === 5 && order === "111,222,333,444,555",
+    order,
+  );
+  check(
+    "a good line is written on the retry, not lost with the bad one",
+    outcomes[0]?.kind === "written" && outcomes[4]?.kind === "written",
+    `${outcomes[0]?.kind ?? "?"}, ${outcomes[4]?.kind ?? "?"}`,
+  );
+  check(
+    "an unknown sku is named, not blamed on the batch",
+    outcomes[1]?.kind === "failed" && outcomes[1].reason.includes("No product 222"),
+    outcomes[1]?.kind === "failed" ? outcomes[1].reason.slice(0, 56) : "(written)",
+  );
+  check(
+    "the wrong pricing unit says which unit the product is sold by",
+    outcomes[2]?.kind === "failed" && outcomes[2].reason.includes("sold by KG"),
+    outcomes[2]?.kind === "failed" ? outcomes[2].reason.slice(0, 56) : "(written)",
+  );
+  check(
+    "a product the store does not range says so, not 'out of stock'",
+    outcomes[3]?.kind === "failed" && outcomes[3].reason.includes("not sold at the store"),
+    outcomes[3]?.kind === "failed" ? outcomes[3].reason.slice(0, 56) : "(written)",
+  );
+  check(
+    "the batch was retried once, not item by item",
+    writes === 2,
+    `${writes} write(s), ${lookups} lookup(s)`,
+  );
+}
 
 console.log("\norder history shapes");
 {

@@ -97,7 +97,14 @@ export interface CatalogueProduct {
   readonly wasPrice: number | undefined;
   readonly savedAmount: number | undefined;
   readonly availability: string;
+  /** The unit of the product's default variant, which is the first the site lists. */
   readonly purchasingUnit: string;
+  /**
+   * Every unit this product can be bought in. A product sold both by the item and by weight has
+   * two, and either is a valid `pricingUnit` for a cart write — reading only `purchasingUnit`
+   * would refuse the other one.
+   */
+  readonly pricingUnits: readonly string[];
   readonly canBuyByWeight: boolean;
   readonly minimumQuantity: number;
   readonly quantityIncrement: number;
@@ -125,6 +132,7 @@ export function toCatalogueProduct(product: RawSearchProduct): CatalogueProduct 
     savedAmount: price?.savedAmount ?? undefined,
     availability: variant.availabilityStatus,
     purchasingUnit: variant.unitOfMeasure,
+    pricingUnits: [...new Set(product.variants.map((entry) => entry.unitOfMeasure))],
     canBuyByWeight: product.variants.some((entry) => entry.unitOfMeasure === "KG"),
     minimumQuantity: variant.purchaseUnit.minimumQty,
     quantityIncrement: variant.purchaseUnit.incrementQty,
