@@ -59,9 +59,12 @@ function stubFetch(redirectStatus: number | undefined): typeof globalThis.fetch 
 
 // --- A rejection must not cost the sign-in ---------------------------------------------------
 const session = new Session();
+// Dated from now, never a literal: a fixed date makes the jar drop the cookie once it passes,
+// and this check then fails for the calendar rather than for anything it is testing.
+const EXPIRES = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toUTCString();
 await session.importCookies([
   {
-    setCookie: "cw-lrkswrdjp=signed-in; Path=/; Expires=Wed, 09 Sep 2026 08:00:00 GMT",
+    setCookie: `cw-lrkswrdjp=signed-in; Path=/; Expires=${EXPIRES}`,
     url: "https://www.woolworths.co.nz/",
   },
 ]);
