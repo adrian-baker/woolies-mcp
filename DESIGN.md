@@ -301,14 +301,44 @@ demonstrated, keeping the shell's claim beside it as `shellReportsSignedIn` so a
 is visible. `requireSignedIn` still reads `/shell` as a cheap pre-check, with the 401 guard as the
 authority.
 
+## Authorising a client
+
+Two separate credentials, often conflated: `MCP_AUTH_PASSPHRASE` authorises a client to this
+server; the Woolworths sign-in above authorises this server to the site. Neither substitutes for
+the other, and OAuth cannot produce the second.
+
+`MCP_PUBLIC_URL` turns on an authorisation server inside this one (MCP spec rev 2025-11-25:
+RFC 9728 protected-resource metadata, RFC 8414 AS metadata, RFC 7591 dynamic registration, PKCE
+S256 mandatory). MCP then serves at `/mcp` behind a bearer token; the path-token endpoint closes,
+leaving one door rather than two of unequal strength. Written against `node:http` rather than
+mounted from the SDK's router, which is Express-only.
+
+Tokens are opaque and stored as SHA-256 only, so neither the state file nor the heap yields a
+working credential. Access tokens live an hour in memory; clients and refresh tokens persist, so a
+restart costs no approval. Refresh tokens rotate on use.
+
+**The refresh grant is refused while the Woolworths session is dead**, which is the point of the
+whole exercise and a deliberate deviation. A client holding a good refresh token renews in the
+background indefinitely and never asks the person anything, so an expired site session surfaces
+only as tools that fail. `invalid_grant` there makes the client discard its tokens and run the
+authorisation flow, which opens the consent page in a browser — the one moment the person is
+present and can be told the session needs renewing. The consent page states the session as
+signed-in, signed-out, or *not determined*: a site that did not answer must not read as signed
+out.
+
+The passphrase check is rate-limited: five failures lock the page for fifteen minutes.
+Registration is open, which is what dynamic client registration means — the passphrase is the
+guard.
+
 ## Stack and deployment
 
 TypeScript, `@modelcontextprotocol/sdk`. Two entry points: stdio for local use, stateless
 Streamable HTTP for the NAS. Strict compiler settings cover `src` and `scripts`; no shell scripts.
 
 Docker on the Synology NAS, public HTTPS via Tailscale Funnel at
-the tailnet hostname in `PUBLIC_BASE_URL`, MCP served only at `/mcp/<MCP_PATH_TOKEN>` — everything else
-404s with an empty body, so whole-port Funnel needs no path juggling.
+the tailnet hostname in `PUBLIC_BASE_URL`. MCP is served at `/mcp/<MCP_PATH_TOKEN>`, or at `/mcp`
+behind OAuth when `MCP_PUBLIC_URL` is set; beyond that, `/healthz` and the OAuth endpoints. Every
+other path 404s with an empty body, so whole-port Funnel needs no path juggling.
 
 `npm run deploy` ships HEAD over SSH as a tarball (DSM disables SFTP, and the host then needs no
 git credentials),

@@ -5,9 +5,13 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import { ConfigError, readHttpConfig, type HttpConfig } from "./config.js";
+import { ConfigError, readHttpConfig, type HttpConfig, type OAuthConfig } from "./config.js";
+import { OAuthEndpoints } from "./oauth/endpoints.js";
+import { OAuthStore } from "./oauth/store.js";
 import { createServer, createWoolworthsApi, SERVER_NAME, SERVER_VERSION } from "./server.js";
 import { SessionStore, defaultSessionFilePath, restoreStoredSession } from "./session-store.js";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import type { WoolworthsApi } from "./woolworths/api.js";
 
 /**
@@ -156,19 +160,32 @@ function parseCookies(body: string): readonly { setCookie: string; url: string }
   return cookies;
 }
 
-export async function startHttpServer(
-  config: HttpConfig,
-): Promise<ReturnType<typeof createHttpServer>> {
-  const mcpPath = `/mcp/${config.pathToken}`;
-  const api = createWoolworthsApi();
-  const store = new SessionStore(process.env["WOOLIES_SESSION_FILE"] ?? defaultSessionFilePath());
-  // Awaited before anything can be served. The restore costs two throttled round trips, and a
-  // tool call inside that window would answer as a guest — at a guest's store, with a guest's
-  // prices — without saying so.
-  await restoreStoredSession(api, store, SERVER_NAME);
+/** Everything the router needs, so the offline check can drive the real routing. */
+export interface RequestHandlerDeps {
+  readonly api: WoolworthsApi;
+  readonly sessionStore: SessionStore;
+  readonly oauth: OAuthEndpoints | undefined;
+  readonly pathToken: string;
+}
 
-  const httpServer = createHttpServer((req, res) => {
+export function createRequestHandler(
+  deps: RequestHandlerDeps,
+): (req: IncomingMessage, res: ServerResponse) => void {
+  const tokenPath = `/mcp/${deps.pathToken}`;
+  const { api, sessionStore, oauth } = deps;
+
+  return (req, res) => {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
+
+    const authFlow = oauth?.route(path, req, res);
+    if (authFlow !== undefined) {
+      authFlow.catch((error: unknown) => {
+        console.error(`[${SERVER_NAME}] oauth ${path} failed:`, error);
+        if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
+        if (!res.writableEnded) res.end(JSON.stringify({ error: "server_error" }));
+      });
+      return;
+    }
 
     if (path === "/healthz") {
       res
@@ -177,8 +194,8 @@ export async function startHttpServer(
       return;
     }
 
-    if (path === `${mcpPath}/session`) {
-      handleSessionImport(api, store, req, res).catch((error: unknown) => {
+    if (path === `${tokenPath}/session`) {
+      handleSessionImport(api, sessionStore, req, res).catch((error: unknown) => {
         console.error(`[${SERVER_NAME}] session handover failed:`, error);
         if (!res.headersSent) res.writeHead(500, { "content-type": "application/json" });
         if (!res.writableEnded) res.end(JSON.stringify({ error: "internal_error" }));
@@ -186,9 +203,23 @@ export async function startHttpServer(
       return;
     }
 
-    if (path !== mcpPath) {
-      notFound(res);
-      return;
+    // Exactly one door to the tools: the bearer-guarded path when OAuth is configured, the
+    // unguessable path when it is not. Two doors to the same account is the weaker of the two.
+    if (oauth === undefined) {
+      if (path !== tokenPath) {
+        notFound(res);
+        return;
+      }
+    } else {
+      if (path !== "/mcp") {
+        notFound(res);
+        return;
+      }
+      const grant = oauth.authenticate(req);
+      if (typeof grant === "string") {
+        oauth.challenge(res, grant);
+        return;
+      }
     }
 
     handleMcp(api, req, res).catch((error: unknown) => {
@@ -198,16 +229,58 @@ export async function startHttpServer(
         res.end(JSON.stringify({ error: "internal_error" }));
       }
     });
-  });
+  };
+}
+
+export async function startHttpServer(
+  config: HttpConfig,
+): Promise<ReturnType<typeof createHttpServer>> {
+  const api = createWoolworthsApi();
+  const sessionStore = new SessionStore(config.sessionPath ?? defaultSessionFilePath());
+  // `checkAccountAccess` makes a real account call, so the refresh grant refuses on a
+  // demonstrated dead session rather than an assumed one: one throttled request per refresh.
+  const oauth = await createOAuth(
+    config.oauth,
+    async () => (await api.checkAccountAccess()).usable,
+  );
+  // Awaited before anything can be served. The restore costs two throttled round trips, and a
+  // tool call inside that window would answer as a guest — at a guest's store, with a guest's
+  // prices — without saying so.
+  await restoreStoredSession(api, sessionStore, SERVER_NAME);
+
+  const httpServer = createHttpServer(
+    createRequestHandler({ api, sessionStore, oauth, pathToken: config.pathToken }),
+  );
 
   httpServer.listen(config.port, () => {
-    // The token is deliberately not logged: the path is the only thing guarding the endpoint.
+    // No secret is logged: neither the path token nor the passphrase appears here.
     console.error(
-      `[${SERVER_NAME}] ${SERVER_VERSION} listening on :${config.port}, MCP at /mcp/<token>`,
+      `[${SERVER_NAME}] ${SERVER_VERSION} listening on :${config.port}, MCP at ` +
+        (oauth === undefined ? "/mcp/<token>" : `${oauth.resource} behind OAuth`),
     );
   });
 
   return httpServer;
+}
+
+export async function createOAuth(
+  settings: OAuthConfig | undefined,
+  upstreamSessionUsable: () => Promise<boolean>,
+): Promise<OAuthEndpoints | undefined> {
+  if (settings === undefined) return undefined;
+  const store = new OAuthStore(settings.statePath ?? defaultOAuthStatePath());
+  await store.load();
+  return new OAuthEndpoints({
+    publicUrl: settings.publicUrl,
+    passphrase: settings.passphrase,
+    store,
+    upstreamSessionUsable,
+  });
+}
+
+/** Beside the session file, and resolved the same way and for the same reason. */
+function defaultOAuthStatePath(): string {
+  return fileURLToPath(new URL("../oauth-state.json", import.meta.url));
 }
 
 /** A misconfigured deploy must fail here, loudly and readably, not on the first request. */
@@ -240,4 +313,8 @@ async function main(): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
-await main();
+// Only when run as the entry point: importing this module to reuse its router must not start a
+// server or read the environment.
+if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
+}

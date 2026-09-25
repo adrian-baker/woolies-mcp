@@ -5,6 +5,19 @@
 
 export class ConfigError extends Error {}
 
+export interface OAuthConfig {
+  /**
+   * The public https origin this deployment answers on. It is the OAuth issuer and the base of
+   * every advertised endpoint, so a value that does not match what the client actually reached
+   * produces a flow that discovers endpoints nobody serves.
+   */
+  readonly publicUrl: URL;
+  /** The one shared secret typed on the consent page. It is the only thing gating access. */
+  readonly passphrase: string;
+  /** Registered clients and refresh tokens. Unset keeps them in memory, lost on restart. */
+  readonly statePath: string | undefined;
+}
+
 export interface HttpConfig {
   readonly port: number;
   /**
@@ -14,6 +27,14 @@ export interface HttpConfig {
    * shopper — reading their orders and writing to their cart. Treat the token as a credential.
    */
   readonly pathToken: string;
+  /**
+   * Present only when MCP_PUBLIC_URL is set. When present, MCP is served at `/mcp` behind a
+   * bearer token and the token path serves nothing but the session handover: two doors to the
+   * same account, one of them weaker, is the weaker one.
+   */
+  readonly oauth: OAuthConfig | undefined;
+  /** Where the Woolworths cookies are persisted. Unset means a restart starts anonymous. */
+  readonly sessionPath: string | undefined;
 }
 
 export const DEFAULT_HTTP_PORT = 8480;
@@ -35,7 +56,44 @@ export function readHttpConfig(env: Readonly<Record<string, string | undefined>>
     throw new ConfigError("MCP_PATH_TOKEN must be URL-safe: letters, digits, underscore, hyphen.");
   }
 
-  return { port: readPort(env["PORT"]), pathToken: token };
+  return {
+    port: readPort(env["PORT"]),
+    pathToken: token,
+    oauth: readOAuth(env),
+    sessionPath: env["WOOLIES_SESSION_FILE"],
+  };
+}
+
+const MIN_PASSPHRASE_LENGTH = 12;
+
+function readOAuth(env: Readonly<Record<string, string | undefined>>): OAuthConfig | undefined {
+  const raw = env["MCP_PUBLIC_URL"]?.trim();
+  if (raw === undefined || raw === "") return undefined;
+
+  let publicUrl: URL;
+  try {
+    publicUrl = new URL(raw);
+  } catch {
+    throw new ConfigError(`MCP_PUBLIC_URL is not a URL: '${raw}'.`);
+  }
+  // Loopback is exempt so the offline check can run the real flow without a certificate.
+  const loopback = publicUrl.hostname === "127.0.0.1" || publicUrl.hostname === "localhost";
+  if (publicUrl.protocol !== "https:" && !loopback) {
+    throw new ConfigError(`MCP_PUBLIC_URL must be https; got '${raw}'.`);
+  }
+  if (publicUrl.search !== "" || publicUrl.hash !== "") {
+    throw new ConfigError("MCP_PUBLIC_URL must carry no query string and no fragment.");
+  }
+
+  const passphrase = env["MCP_AUTH_PASSPHRASE"];
+  if (passphrase === undefined || passphrase.length < MIN_PASSPHRASE_LENGTH) {
+    throw new ConfigError(
+      `MCP_AUTH_PASSPHRASE must be set to at least ${MIN_PASSPHRASE_LENGTH} characters when ` +
+        "MCP_PUBLIC_URL is: it is the only thing standing between the internet and this account.",
+    );
+  }
+
+  return { publicUrl, passphrase, statePath: env["MCP_OAUTH_FILE"] };
 }
 
 function readPort(raw: string | undefined): number {

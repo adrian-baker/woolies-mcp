@@ -8,6 +8,9 @@ services:
     environment:
       # The signed-in session lives here so a restart or redeploy does not need another sign-in.
       WOOLIES_SESSION_FILE: /data/session.json
+      # Registered clients and refresh tokens, so a restart does not cost a browser approval.
+      # Ignored unless MCP_PUBLIC_URL is set in .env.
+      MCP_OAUTH_FILE: /data/oauth-state.json
     volumes:
       - ./data:/data
     # Bound to loopback only: the public edge is Tailscale Funnel, which proxies to 127.0.0.1.

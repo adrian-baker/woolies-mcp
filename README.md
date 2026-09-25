@@ -150,10 +150,18 @@ Two entry points share one `createServer`:
 connects to. Any host that runs Node or Docker will do; the sections below describe one
 arrangement, and none of it is required for local stdio use.
 
-The HTTP transport serves MCP **only** at `/mcp/$MCP_PATH_TOKEN`. `/healthz` returns a version
-string with no secrets, and every other path returns 404 with an empty body. The token is an
-unguessable path, not authentication. It guards a session that can read and fill the signed-in
-trolley, so treat the token as a credential.
+There are two ways to guard it, and only one is on at a time.
+
+By default the transport serves MCP **only** at `/mcp/$MCP_PATH_TOKEN`. `/healthz` returns a
+version string with no secrets, and every other path returns 404 with an empty body. The token is
+an unguessable path, not authentication: it travels in the URL, so it ends up in the client's
+configuration and anywhere that URL is logged. It guards a session that can read and fill the
+signed-in trolley, so treat the token as a credential.
+
+Setting `MCP_PUBLIC_URL` turns on the built-in OAuth authorisation server instead. MCP then lives
+at `/mcp` behind a bearer token, the token path serves nothing but the `npm run login` handover,
+and a client authorises itself by sending you to a consent page. See
+[Authorising a hosted client](#authorising-a-hosted-client-optional).
 
 Copy `.env.example` to `.env` and fill it in. Generate the token with `openssl rand -hex 24`.
 
@@ -210,8 +218,9 @@ Enable HTTPS certificates and Funnel once for the tailnet in the Tailscale admin
 first `funnel` run prints an approval link if the policy has not been set. The resulting hostname
 is `<node>.<tailnet>.ts.net` — put it in `PUBLIC_BASE_URL`.
 
-Whole-port Funnel is safe here because the app serves MCP only at `/mcp/$MCP_PATH_TOKEN` and 404s
-everything else. Anything else that reaches port 8480 gets nothing.
+Whole-port Funnel is safe here because the app serves only what it means to: MCP behind its guard,
+`/healthz`, and — when OAuth is on — the discovery, registration, consent and token endpoints.
+Every other path returns 404 with an empty body.
 
 Verify from outside:
 
@@ -227,6 +236,36 @@ npm run login -- --server <public-base-url>/mcp/<token>
 
 Substitute the `PUBLIC_BASE_URL` and `MCP_PATH_TOKEN` values from your `.env`; these commands do
 not read it for you.
+
+### Authorising a hosted client (optional)
+
+A hosted client such as claude.ai will not hold a secret URL for you; it expects to authorise
+itself. Setting `MCP_PUBLIC_URL` and `MCP_AUTH_PASSPHRASE` turns on an authorisation server built
+into this one, and the connector address becomes the plain `https://<host>/mcp`.
+
+```sh
+npm run check:oauth       # the whole flow, on loopback, touching nothing
+```
+
+What the client does, all of it standard: it fetches
+`/.well-known/oauth-protected-resource`, follows that to `/.well-known/oauth-authorization-server`,
+registers itself at `/register` (RFC 7591), and opens `/authorize` in your browser. That page names
+the client, states whether the Woolworths session is currently signed in, and asks for
+`MCP_AUTH_PASSPHRASE`. Approving it returns a code, which the client exchanges at `/token` with
+PKCE S256 for an access token good for an hour and a rotating refresh token.
+
+There is one deliberate deviation. **A refresh is refused while the Woolworths session is dead.**
+A client holding a working refresh token renews in the background forever and never asks you
+anything, so a dead upstream session would surface only as tools that fail. Refusing the refresh
+makes the client run the flow again, which puts the consent page — and the instructions for
+renewing the session — in front of you at the moment it matters.
+
+Two credentials, doing different jobs: `MCP_AUTH_PASSPHRASE` authorises a client to this server;
+`npm run login` signs this server in to Woolworths. Neither can substitute for the other.
+
+Five wrong passphrases lock the consent page for fifteen minutes. Registration is open, which is
+what dynamic client registration means — the passphrase is what actually guards the account, so
+give it the strength of one.
 
 ## Politeness
 
