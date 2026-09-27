@@ -61,10 +61,17 @@ async function main(): Promise<void> {
   step("Waiting for health");
   await waitForHealth();
 
+  // Asked of the running service rather than read from the local .env, which the target's may
+  // not match: it is copied only when the target has none.
+  const oauth =
+    (await sshStatus(
+      "curl -fsS http://127.0.0.1:8480/.well-known/oauth-protected-resource >/dev/null 2>&1",
+    )) === 0;
+  const path = oauth ? "/mcp" : "/mcp/<MCP_PATH_TOKEN>";
   step(
     PUBLIC_URL === undefined
-      ? "Deployed."
-      : `Deployed. Public URL: ${PUBLIC_URL}/mcp/<MCP_PATH_TOKEN>`,
+      ? `Deployed. Connector path: ${path}`
+      : `Deployed. Connector URL: ${PUBLIC_URL}${path}`,
   );
 }
 

@@ -26,13 +26,7 @@ export interface OAuthOptions {
   readonly publicUrl: URL;
   readonly passphrase: string;
   readonly store: OAuthStore;
-  /**
-   * Whether the Woolworths session can still answer for the account.
-   *
-   * A refresh is refused when it cannot. That refusal is the only way to make a client open a
-   * browser: a client holding a working refresh token renews in the background and the person
-   * is never asked anything.
-   */
+  /** Whether the Woolworths session can answer for the account, shown on the consent page. */
   readonly upstreamSessionUsable: () => Promise<boolean>;
 }
 
@@ -211,6 +205,7 @@ export class OAuthEndpoints {
         clientName: validated.clientName,
         redirectUri: validated.pending.redirectUri,
         session,
+        origin: this.options.publicUrl.origin,
         locked: this.lockRemainingMs() > 0,
       }),
     );
@@ -392,21 +387,14 @@ export class OAuthEndpoints {
   }
 
   /**
-   * Refuses while the Woolworths session is dead, so the client stops renewing in the background
-   * and runs the authorisation flow — which is what puts a browser in front of the person.
+   * Renews regardless of the Woolworths session. Its state is not this grant's business: a dead
+   * session is repaired by the server signing in again, and refusing here would disconnect the
+   * catalogue tools too, which work without it.
    */
   private async refresh(form: URLSearchParams, res: ServerResponse): Promise<void> {
     const refreshToken = form.get("refresh_token");
     if (refreshToken === null) {
       json(res, 400, { error: "invalid_request", error_description: "refresh_token is required" });
-      return;
-    }
-    if (!(await this.options.upstreamSessionUsable())) {
-      json(res, 400, {
-        error: "invalid_grant",
-        error_description:
-          "the Woolworths session this server holds is no longer signed in; authorise again to be shown how to renew it",
-      });
       return;
     }
     const issued = await this.options.store.redeemRefreshToken(refreshToken);
@@ -560,12 +548,13 @@ interface ConsentView {
   readonly clientName: string | undefined;
   readonly redirectUri: string;
   readonly session: SessionState;
+  readonly origin: string;
   readonly locked: boolean;
 }
 
 function consentPage(view: ConsentView): string {
   const who = escapeHtml(view.clientName ?? "An unnamed client");
-  const session = describeSession(view.session);
+  const session = describeSession(view.session, view.origin);
   const form = view.locked
     ? "<p>Too many failed attempts. This page will accept a passphrase again shortly.</p>"
     : `<form method="post" action="/authorize">
@@ -586,16 +575,17 @@ ${form}
 /** Tri-state on purpose: "could not be determined" must not present as "not signed in". */
 type SessionState = "signedIn" | "signedOut" | "unknown";
 
-function describeSession(state: SessionState): string {
+function describeSession(state: SessionState, origin: string): string {
   switch (state) {
     case "signedIn":
       return "<p><strong>Woolworths session: signed in.</strong> Every tool works.</p>";
     case "signedOut":
       return (
         "<p><strong>Woolworths session: not signed in.</strong> Catalogue search still works; " +
-        "cart, orders and account tools will not, until the session is renewed by running " +
-        "<code>npm run login -- --server &lt;this server&gt;/mcp/&lt;path token&gt;</code> on a " +
-        "machine with a browser.</p>"
+        "cart, orders and account tools will not. With a credentials file the server has already " +
+        "tried to sign itself in, and <code>auth_status</code> says why that stopped. Fix the " +
+        "file, or sign in from a machine " +
+        `with a browser: <code>npm run login -- --server ${escapeHtml(origin)}/mcp/&lt;MCP_PATH_TOKEN&gt;</code></p>`
       );
     case "unknown":
       return (

@@ -1,4 +1,4 @@
-import { CookieJar } from "tough-cookie";
+import { Cookie, CookieJar } from "tough-cookie";
 
 export const SITE_ORIGIN = "https://www.woolworths.co.nz";
 
@@ -77,10 +77,7 @@ export class Session {
     return cookies.map((cookie) => cookie.key);
   }
 
-  /**
-   * Loads cookies captured from a browser sign-in; each entry is a Set-Cookie string and its URL.
-   * Auth0 challenges non-browser clients with Turnstile, so sign-in cannot happen here.
-   */
+  /** Loads cookies from a stored or handed-over session; each is a Set-Cookie string and its URL. */
   async importCookies(cookies: readonly ImportedCookie[]): Promise<number> {
     let accepted = 0;
     for (const { setCookie, url } of cookies) {
@@ -95,20 +92,22 @@ export class Session {
   }
 
   /**
-   * The `Expires` date the site put on its session cookie, or undefined if the jar holds none.
-   *
-   * This is the server's claim about the cookie, not evidence the session still works: a session
-   * can be ended early by signing out elsewhere, a password change or a security event, and the
-   * cookie keeps its original date regardless. Only a live call proves a session.
+   * Every woolworths.co.nz cookie the jar holds, as Set-Cookie strings `importCookies` accepts, so
+   * a session the server signed in itself can be stored and restored like a handed-over one.
    */
-  async cookieExpiry(): Promise<Date | undefined> {
-    const cookies = await this.jar.getCookies(SITE_ORIGIN);
-    const dated = cookies
-      .filter((cookie) => cookie.key.startsWith("cw-"))
-      .map((cookie) => cookie.expires)
-      .filter((expires): expires is Date => expires instanceof Date);
-    if (dated.length === 0) return undefined;
-    return dated.reduce((soonest, next) => (next < soonest ? next : soonest));
+  async exportCookies(): Promise<readonly ImportedCookie[]> {
+    const serialized = await this.jar.serialize();
+    const exported: ImportedCookie[] = [];
+    for (const json of serialized.cookies) {
+      const cookie = Cookie.fromJSON(json);
+      const domain = cookie?.domain;
+      if (cookie === undefined || !domain?.endsWith("woolworths.co.nz")) continue;
+      exported.push({
+        setCookie: cookie.toString(),
+        url: `https://${domain}${cookie.path ?? "/"}`,
+      });
+    }
+    return exported;
   }
 
   /** Issues a request with the jar applied, storing any cookies the response sets. */
@@ -124,6 +123,14 @@ export class Session {
       target = next;
     }
     throw new SessionError(`More than ${maxRedirects} redirects starting at ${url.href}`);
+  }
+
+  /**
+   * One request and no redirect following, for a caller that has to see every hop. Cookies are
+   * still absorbed from the response.
+   */
+  async fetchOnce(url: URL, init: RequestInit = {}): Promise<Response> {
+    return this.sendOnce(url, init);
   }
 
   private async loadHomepage(): Promise<void> {

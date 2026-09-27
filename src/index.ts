@@ -10,8 +10,12 @@ import { createServer, createWoolworthsApi, SERVER_NAME, SERVER_VERSION } from "
  * the first call rather than silently anonymous.
  */
 async function main(): Promise<void> {
-  const api = createWoolworthsApi();
   const store = new SessionStore(process.env["WOOLIES_SESSION_FILE"] ?? defaultSessionFilePath());
+  const credentialsPath = process.env["WOOLIES_CREDENTIALS_FILE"]?.trim();
+  const api = createWoolworthsApi({
+    credentialsPath: credentialsPath === "" ? undefined : credentialsPath,
+    sessionStore: store,
+  });
   await restoreStoredSession(api, store, SERVER_NAME);
 
   const server = createServer(api);

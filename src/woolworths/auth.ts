@@ -1,42 +1,28 @@
 /**
- * Sign-in happens out of band, in a real browser, via `npm run login`.
+ * How the account tools explain a session that is not signed in.
  *
- * Auth0 serves a Cloudflare Turnstile challenge to clients that do not look like browsers, so
- * posting an email and password from here does not work: it fails the challenge and each attempt
- * counts against the real account. A person signing in themselves is both the legitimate path and
- * the one that is not challenged. The resulting cookies are handed to the server and the password
- * never reaches this process.
- *
- * This module therefore holds no credentials and makes no network calls. It exists so the account
- * tools can explain an anonymous session instead of failing opaquely.
+ * There are two ways in: the server signs itself in from a credentials file when the session dies
+ * (`credential-signin.ts`), and a person can hand over a browser session with `npm run login`.
+ * This module makes no network calls; it only words the outcome.
  */
 
-export type SignInOutcome =
-  | { readonly kind: "alreadySignedIn" }
-  | { readonly kind: "handoverRequired"; readonly detail: string };
-
 const HANDOVER_DETAIL =
-  "This session is not signed in. Sign in by running `npm run login` where the server is " +
-  "deployed: it opens a real browser at the Woolworths login page, waits for you to sign in, " +
-  "and hands the resulting session to the server. The server never sees your password. " +
-  "Credentials cannot be supplied here — Auth0 challenges non-browser sign-ins, and attempts " +
-  "count against the account. Log in again — every tool needs the session.";
-
-export class Authenticator {
-  /** Reports the session state. Makes no request, so no account is ever touched. */
-  signIn(alreadySignedIn: boolean): Promise<SignInOutcome> {
-    return Promise.resolve(
-      alreadySignedIn
-        ? { kind: "alreadySignedIn" }
-        : { kind: "handoverRequired", detail: HANDOVER_DETAIL },
-    );
-  }
-}
+  "This session is not signed in, so the account tools cannot work. The server signs itself in " +
+  "automatically when it has a credentials file (WOOLIES_CREDENTIALS_FILE); without one, or " +
+  "when that has stopped, a person runs `npm run login -- --server <server>/mcp/<path token>` " +
+  "on any machine with a browser. Credentials are never accepted as tool arguments.";
 
 /** Raised by account operations when the session is anonymous. */
 export class NotSignedInError extends Error {
-  constructor(options?: ErrorOptions) {
-    super(HANDOVER_DETAIL, options);
+  /** Why automatic sign-in did not rescue the session, when it was tried. */
+  readonly recovery: string | undefined;
+
+  constructor(options?: ErrorOptions, recovery?: string) {
+    super(
+      recovery === undefined ? HANDOVER_DETAIL : `${HANDOVER_DETAIL} This time: ${recovery}.`,
+      options,
+    );
     this.name = "NotSignedInError";
+    this.recovery = recovery;
   }
 }

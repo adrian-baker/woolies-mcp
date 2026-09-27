@@ -5,8 +5,9 @@ import { guarded, jsonResult } from "./respond.js";
 import { skuArgument } from "./arguments.js";
 
 /**
- * Account tools. They need a session signed in out of band by `npm run login`; no credential ever
- * passes through this process.
+ * Account tools. They need a signed-in session, which the server keeps signed in from its
+ * credentials file or which a person hands over with `npm run login`. No credential is ever a
+ * tool argument.
  *
  * There is deliberately no tool for checkout, payment, delivery slots or placing an order. Those
  * upstream endpoints exist and are intentionally left unbound: this server can fill a cart,
@@ -21,23 +22,13 @@ const CART_SEMANTICS =
   "a kilogram of it.";
 
 const NEEDS_ACCOUNT =
-  "Needs a signed-in session; run `npm run login` where the server runs, or call sign_in for " +
-  "the details.";
+  "Needs a signed-in session. The server signs itself in again when the session dies, if it has " +
+  "credentials; when it cannot, the error says why — call auth_status for the details.";
 
 const CART_LOCATION =
   "The cart lives on the site's GraphQL API, which serves an unauthenticated caller an empty " +
   "guest cart rather than an error. Every cart call here proves the session first, so an empty " +
   "cart returned by these tools is genuinely empty and never a silently expired session.";
-
-/** States the cookie date as a ceiling, never as a date to plan around. */
-function describeCookieExpiry(expiry: Date | undefined): string {
-  if (expiry === undefined)
-    return "The session carries no dated cookie, so it can end at any time.";
-  return (
-    `The session cookie is dated ${expiry.toISOString()}, which is the longest it can last, ` +
-    "not a guarantee it will."
-  );
-}
 
 export function registerAccountTools(server: McpServer, api: WoolworthsApi): void {
   server.registerTool(
@@ -45,21 +36,20 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
     {
       title: "Sign in to Woolworths",
       description:
-        "Report whether the session is signed in, and if not, how to sign it in. Sign-in is not " +
-        "performed here and cannot be: it happens in a real browser via `npm run login` on the " +
-        "machine running the server, because Auth0 challenges non-browser sign-ins. This tool " +
-        "never sends credentials and never touches the account.",
+        "Make sure the session is signed in. If it is not and the server has a credentials file, " +
+        "this is the moment the server signs itself in; the result says whether that worked and, " +
+        "if not, why automatic sign-in has stopped. A stop is not retried from here: it clears " +
+        "when the credentials file is rewritten, a browser session is handed over with " +
+        "`npm run login`, or the server restarts. Takes no credentials and never sees any.",
       inputSchema: {},
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
     async () =>
       guarded("sign_in", async () => {
-        const outcome = await api.signIn();
-        // Same demonstrated check as auth_status, so the two can never contradict each other.
         const access = await api.checkAccountAccess();
         return jsonResult({
-          outcome,
           accountToolsUsable: access.usable,
+          autoSignIn: await api.autoSignInStatus(),
         });
       }),
   );
@@ -71,9 +61,10 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
       description:
         "Report whether the account tools will work, by making a real account call rather than " +
         "inferring it. `accountToolsUsable` is demonstrated, not guessed: if it is true the cart, " +
-        "location, history and order tools work right now. `cookieExpiresAt`, when present, is " +
-        "only the date stamped on the session cookie: an upper bound, not a promise. When this " +
-        "reports false, the answer is to log in again: every tool needs the session.",
+        "location, history and order tools work right now. A dead session is signed in again on " +
+        "this call when the server has credentials. `autoSignIn.state` is `ready`, `stopped` " +
+        "(with the reason — a person has to act), or `notConfigured` (no credentials file; sign " +
+        "in with `npm run login` from a machine with a browser).",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -82,15 +73,9 @@ export function registerAccountTools(server: McpServer, api: WoolworthsApi): voi
         // Costs one account call. A status tool that guesses is worse than a status tool that
         // asks, and this is the tool people check before trusting the others.
         const access = await api.checkAccountAccess();
-        // Only reported when access is demonstrated: a forward date beside an unusable session
-        // describes a session that is already gone.
-        const cookieExpiry = access.usable ? await api.cookieExpiry() : undefined;
         return jsonResult({
           accountToolsUsable: access.usable,
-          cookieExpiresAt: cookieExpiry?.toISOString(),
-          hint: access.usable
-            ? `Account tools work right now. ${describeCookieExpiry(cookieExpiry)}`
-            : "Account tools will fail. Run `npm run login` where the server runs.",
+          autoSignIn: await api.autoSignInStatus(),
         });
       }),
   );

@@ -11,6 +11,9 @@ services:
       # Registered clients and refresh tokens, so a restart does not cost a browser approval.
       # Ignored unless MCP_PUBLIC_URL is set in .env.
       MCP_OAUTH_FILE: /data/oauth-state.json
+      # The email and password the server signs itself in with when the session dies. Written by
+      # `npm run credentials`; while the file is absent, automatic sign-in is off.
+      WOOLIES_CREDENTIALS_FILE: /data/credentials.json
     volumes:
       - ./data:/data
     # Bound to loopback only: the public edge is Tailscale Funnel, which proxies to 127.0.0.1.

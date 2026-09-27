@@ -110,9 +110,18 @@ export async function restoreStoredSession(
     process.exit(1);
   });
   if (cookies === undefined) {
+    const auto = await api.autoSignInStatus();
+    if (auto.state === "notConfigured") {
+      console.error(
+        `[${serverName}] no stored session at ${store.location ?? "(persistence off)"} and no ` +
+          "credentials file; run `npm run login` to sign in. Catalogue tools work without one.",
+      );
+      return;
+    }
+    // A fresh install with credentials signs in now rather than on the first account call.
+    const access = await api.checkAccountAccess();
     console.error(
-      `[${serverName}] no stored session at ${store.location ?? "(persistence off)"}; ` +
-        "run `npm run login` to sign in. Catalogue tools work without one.",
+      `[${serverName}] no stored session; signed in from credentials: accountToolsUsable=${access.usable}`,
     );
     return;
   }

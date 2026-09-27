@@ -93,7 +93,6 @@ async function handleSessionImport(
   const cookies = parsed;
 
   const access = await api.importSession(cookies);
-  const cookieExpiry = access.usable ? await api.cookieExpiry() : undefined;
   // Stored only once an account call has actually worked, so a restart never restores junk.
   if (access.usable) await store.save(cookies);
   console.error(
@@ -103,8 +102,6 @@ async function handleSessionImport(
     JSON.stringify({
       imported: cookies.length,
       signedIn: access.usable,
-      // The cookie's stated ceiling, not a promise the session lasts that long.
-      cookieExpiresAt: cookieExpiry?.toISOString(),
       persisted: access.usable && store.isEnabled,
     }),
   );
@@ -235,8 +232,8 @@ export function createRequestHandler(
 export async function startHttpServer(
   config: HttpConfig,
 ): Promise<ReturnType<typeof createHttpServer>> {
-  const api = createWoolworthsApi();
   const sessionStore = new SessionStore(config.sessionPath ?? defaultSessionFilePath());
+  const api = createWoolworthsApi({ credentialsPath: config.credentialsPath, sessionStore });
   // `checkAccountAccess` makes a real account call, so the refresh grant refuses on a
   // demonstrated dead session rather than an assumed one: one throttled request per refresh.
   const oauth = await createOAuth(

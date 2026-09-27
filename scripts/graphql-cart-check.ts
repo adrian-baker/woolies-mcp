@@ -20,7 +20,6 @@ import {
   readOperationName,
 } from "../src/woolworths/graphql-client.js";
 import { WoolworthsApi } from "../src/woolworths/api.js";
-import { Authenticator } from "../src/woolworths/auth.js";
 import { Session } from "../src/woolworths/session.js";
 import {
   SIGNED_IN_CART_KEY,
@@ -651,12 +650,7 @@ console.log("\na refused batch");
       new Response(payload, { status: 200, headers: { "content-type": "application/json" } }),
     );
   });
-  const api = new WoolworthsApi(
-    new Session(),
-    new Authenticator(),
-    Date.now,
-    new GraphQlCart(transport, 60_000),
-  );
+  const api = new WoolworthsApi(new Session(), Date.now, new GraphQlCart(transport, 60_000));
   const outcomes = await api.setCartQuantities([
     { sku: "111", quantity: 2, pricingUnit: "EACH" },
     { sku: "222", quantity: 1, pricingUnit: "EACH" },

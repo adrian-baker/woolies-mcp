@@ -35,6 +35,8 @@ export interface HttpConfig {
   readonly oauth: OAuthConfig | undefined;
   /** Where the Woolworths cookies are persisted. Unset means a restart starts anonymous. */
   readonly sessionPath: string | undefined;
+  /** `{ "email", "password" }` the server signs itself in with. Unset turns that off. */
+  readonly credentialsPath: string | undefined;
 }
 
 export const DEFAULT_HTTP_PORT = 8480;
@@ -61,7 +63,13 @@ export function readHttpConfig(env: Readonly<Record<string, string | undefined>>
     pathToken: token,
     oauth: readOAuth(env),
     sessionPath: env["WOOLIES_SESSION_FILE"],
+    credentialsPath: optionalPath(env["WOOLIES_CREDENTIALS_FILE"]),
   };
+}
+
+function optionalPath(raw: string | undefined): string | undefined {
+  const trimmed = raw?.trim();
+  return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
 const MIN_PASSPHRASE_LENGTH = 12;

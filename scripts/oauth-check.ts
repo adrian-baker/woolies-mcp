@@ -365,7 +365,7 @@ console.log("\nThe token, against the real MCP endpoint");
 }
 
 let rotatedRefreshToken: string;
-console.log("\nRefresh, and the refusal that opens a browser");
+console.log("\nRefresh");
 {
   const post = async (body: Readonly<Record<string, string>>): Promise<Record<string, string>> => {
     const response = await fetch(`${base}/token`, {
@@ -376,17 +376,19 @@ console.log("\nRefresh, and the refusal that opens a browser");
     return (await response.json()) as Record<string, string>;
   };
 
+  // A dead Woolworths session is repaired by the server signing in again; refusing the refresh
+  // would also disconnect the catalogue tools, which work without it.
   sessionUsable = false;
-  const refused = await post({
+  const deadSession = await post({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: clientId,
   });
+  refreshToken = deadSession["refresh_token"] ?? "";
   check(
-    "a dead Woolworths session refuses the refresh, so the client must ask the person",
-    refused["error"] === "invalid_grant" &&
-      (refused["error_description"] ?? "").includes("no longer signed in"),
-    JSON.stringify(refused),
+    "a dead Woolworths session does not block the refresh",
+    (deadSession["access_token"] ?? "").length > 0 && refreshToken.length > 0,
+    JSON.stringify(Object.keys(deadSession)),
   );
 
   sessionUsable = true;

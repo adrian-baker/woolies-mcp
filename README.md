@@ -59,11 +59,13 @@ This is an unofficial project, not affiliated with Woolworths — please read
 | `get_buy_it_again(page?)`                       | The site's "Buy it again" list, frequency-ordered. Not the full purchase history. |
 | `get_order_history(filter?, page?)`             | Past or in-flight orders, with their fulfilment slots and totals.               |
 
-Sign-in happens in a real browser. Auth0 challenges non-browser clients with a captcha, so
-`npm run login` opens a window, you sign in, and the captured session is handed to the server,
-which persists it and reloads it at boot. The session cookie is dated 7 days ahead, which is the
-longest it can last rather than a guarantee: signing out elsewhere, a password change or a
-security event ends it sooner. `auth_status` makes real account calls and reports what it
+The server keeps itself signed in. Give it your Woolworths email and password once with
+`npm run credentials`, and whenever the site refuses the session it signs in again, the way the
+website's own login form does, saves the new session, and retries the call. It stops at the first
+failure — a wrong password, a captcha, anything unexpected — and says why, rather than trying
+again against your account; the stop clears when you rewrite the credentials, hand over a browser
+session, or restart. Without a credentials file, `npm run login` opens a real browser for you to
+sign in and hands the session over. `auth_status` makes a real account call and reports what it
 demonstrated, so it cannot claim access the tools do not have.
 
 Woolworths is moving the site from its old REST API to a new GraphQL one. This server has followed
@@ -86,13 +88,15 @@ and places the order on the website.
 > when they differ. Report what was applied, never what was asked for.
 
 `npm run smoke:account` runs the cart sequence and restores the cart; `npm run check:login`
-checks the sign-in chain without credentials; `npm run check:adjustment` and
+checks the sign-in chain without credentials; `npm run check:credential-signin` checks automatic
+sign-in against a stubbed site; `npm run check:adjustment` and
 `npm run check:graphql-cart` check the quantity-adjustment wording and the GraphQL cart contract
 offline.
 
 ## Requirements
 
-Node 20 or newer. The catalogue tools need no account; the cart tools need `npm run login`.
+Node 20 or newer. The catalogue tools need no account; the cart tools need `npm run credentials`
+or `npm run login`.
 
 ## Run it
 
@@ -228,14 +232,23 @@ Verify from outside:
 npm run check:http <public-base-url> <token>
 ```
 
-Then sign in once, which the cart tools need:
+Then give the server your Woolworths login, which the cart tools need. It prompts, with the
+password hidden, and writes it to `data/credentials.json` on the deploy target, readable only by
+the container:
+
+```sh
+npm run credentials
+```
+
+The server signs in on its next start or its next account call, and again whenever the session
+dies. To sign in through a browser instead, with no password stored:
 
 ```sh
 npm run login -- --server <public-base-url>/mcp/<token>
 ```
 
-Substitute the `PUBLIC_BASE_URL` and `MCP_PATH_TOKEN` values from your `.env`; these commands do
-not read it for you.
+Substitute the `PUBLIC_BASE_URL` and `MCP_PATH_TOKEN` values from your `.env`; `check:http` and
+`login` do not read it for you.
 
 ### Authorising a hosted client (optional)
 
@@ -254,14 +267,9 @@ the client, states whether the Woolworths session is currently signed in, and as
 `MCP_AUTH_PASSPHRASE`. Approving it returns a code, which the client exchanges at `/token` with
 PKCE S256 for an access token good for an hour and a rotating refresh token.
 
-There is one deliberate deviation. **A refresh is refused while the Woolworths session is dead.**
-A client holding a working refresh token renews in the background forever and never asks you
-anything, so a dead upstream session would surface only as tools that fail. Refusing the refresh
-makes the client run the flow again, which puts the consent page — and the instructions for
-renewing the session — in front of you at the moment it matters.
-
 Two credentials, doing different jobs: `MCP_AUTH_PASSPHRASE` authorises a client to this server;
-`npm run login` signs this server in to Woolworths. Neither can substitute for the other.
+your Woolworths login signs this server in to the site. Neither can substitute for the other, and
+a dead Woolworths session never costs the client its token.
 
 Five wrong passphrases lock the consent page for fifteen minutes. Registration is open, which is
 what dynamic client registration means — the passphrase is what actually guards the account, so
@@ -282,17 +290,20 @@ src/
   server.ts             tool registration, transport-agnostic
   config.ts             environment parsed once, at startup
   session-store.ts      the signed-in session on disk, shared by both entry points
+  oauth/                the authorisation server: discovery, registration, consent, tokens
   tools/                MCP adapters: argument schemas, descriptions, JSON responses
   woolworths/
     session.ts          cookie jar, browser headers, bootstrap
     graphql-client.ts   the client, the session upgrade, and errors as exceptions
     graphql-documents.ts the operations sent, and the variant-key encoding
     graphql-cart.ts     every operation, with the guest-cart and wrong-cart guards
-    auth.ts             sign-in state; the handover itself is scripts/login.ts
+    credential-signin.ts signing in from stored credentials, and the limits on attempts
+    auth.ts             the not-signed-in error and its wording
     schemas.ts          zod schemas for the site's payloads
     mappers.ts          raw JSON to the compact shapes a client sees
     api.ts              the Woolworths operations, in domain terms
 scripts/
+  credentials.ts        stores the Woolworths login, password hidden
   login.ts              browser sign-in handover
   smoke.ts              live catalogue check
   account-smoke.ts      live cart check, signed in
@@ -303,8 +314,9 @@ scripts/
 
 ## Restore
 
-This repository plus one git-ignored `.env` recreates the deployment. The only state worth
-keeping is the signed-in session under `/data`; losing it costs one `npm run login`.
+This repository plus one git-ignored `.env` recreates the deployment. The state under `/data` is
+the session, the OAuth clients and the stored login; losing it costs one `npm run credentials`
+and reconnecting the client.
 
 For the local stdio server: `git clone`, `npm install`, `npm run build`, and register it with your
 client (the `claude mcp add` line above, for Claude Code).
@@ -321,7 +333,7 @@ To rebuild the NAS deployment from nothing:
 5. `sudo /var/packages/Tailscale/target/bin/tailscale funnel --bg 8480` on the NAS, if the serve
    config was lost too.
 6. `npm run check:http <public-base-url> <token>`.
-7. `npm run login -- --server <public-base-url>/mcp/<token>` to sign in again.
+7. `npm run credentials` to store the Woolworths login again.
 
 Keep copies of every secret in your password manager; none belongs in this repository.
 
@@ -342,7 +354,8 @@ and are deliberately left unbound. Filling a trolley is as far as it goes; a per
 website to check out.
 
 The project and its author collect nothing. There is no telemetry and no phoning home. Your
-session cookies, `.env` and any personal data stay in your own deployment, on your own machine.
+session cookies, stored login, `.env` and any personal data stay in your own deployment, on your
+own machine.
 
 You are responsible for complying with Woolworths' Terms of Service — read them and decide for
 yourself whether this use fits. It drives the website's own internal API, which carries no

@@ -1,6 +1,7 @@
 import { ClientError, GraphQLClient, type RequestOptions } from "graphql-request";
 import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { NotSignedInError } from "./auth.js";
+import type { SessionRecovery } from "./credential-signin.js";
 import { SITE_ORIGIN, type Session } from "./session.js";
 import type { Throttle } from "./throttle.js";
 
@@ -172,13 +173,15 @@ export class FetchGraphQlTransport implements GraphQlTransport {
 export class SessionGraphQlTransport extends FetchGraphQlTransport {
   private readonly session: Session;
   private readonly throttle: Throttle;
+  private readonly recovery: SessionRecovery | undefined;
 
-  constructor(session: Session, throttle: Throttle) {
+  constructor(session: Session, throttle: Throttle, recovery?: SessionRecovery) {
     // One jar and one request budget for the whole server, so it stays one shopper making one
     // request at a time.
     super((input, init) => sendThroughSession(session, throttle, input, init));
     this.session = session;
     this.throttle = throttle;
+    this.recovery = recovery;
   }
 
   override async upgradeSession(): Promise<void> {
@@ -205,8 +208,8 @@ export class SessionGraphQlTransport extends FetchGraphQlTransport {
   }
 
   /**
-   * Sends an operation, minting the Next.js session first and re-minting it once if the site says
-   * the one we hold has expired.
+   * Sends an operation, and when the site refuses the sign-in itself, asks the recovery to sign in
+   * again and sends it once more. One retry: a second refusal is reported, not chased.
    *
    * `__session__0` / `__session__1` are short-lived and roll on every response, so a session that
    * worked a minute ago can be refused. Minting only when absent left the server dead until a
@@ -214,6 +217,29 @@ export class SessionGraphQlTransport extends FetchGraphQlTransport {
    * recovered from once and reported if it recurs.
    */
   override async send<TResult, TVariables extends object>(
+    operation: string,
+    document: TypedDocumentNode<TResult, TVariables>,
+    variables: TVariables,
+  ): Promise<TResult> {
+    try {
+      return await this.sendMinted(operation, document, variables);
+    } catch (error: unknown) {
+      const recovery = this.recovery;
+      if (!(error instanceof NotSignedInError) || recovery === undefined) throw error;
+      const outcome = await recovery.recover();
+      if (outcome.kind !== "signedIn") throw new NotSignedInError({ cause: error }, outcome.reason);
+      // The jar still holds the Next.js session minted for the dead sign-in; it answers as a
+      // guest until replaced.
+      await this.upgradeSession();
+      return await this.sendMinted(operation, document, variables);
+    }
+  }
+
+  /**
+   * Sends an operation, minting the Next.js session first and re-minting it once if the site says
+   * the one we hold has expired.
+   */
+  private async sendMinted<TResult, TVariables extends object>(
     operation: string,
     document: TypedDocumentNode<TResult, TVariables>,
     variables: TVariables,

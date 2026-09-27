@@ -15,6 +15,10 @@ dist/
 session.json
 data/
 
+# The Woolworths password, for automatic sign-in, and the OAuth clients and refresh tokens.
+credentials.json
+oauth-state.json
+
 # Captured browser traffic. Never commit: HAR files carry the session cookies and the
 # account's own addresses and orders.
 *.har

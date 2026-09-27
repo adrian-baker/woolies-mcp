@@ -1,4 +1,4 @@
-import { Authenticator, type SignInOutcome } from "./auth.js";
+import type { AutoSignIn, AutoSignInStatus } from "./credential-signin.js";
 import { GraphQlCart, UnknownProductError, type CartWriteFacts } from "./graphql-cart.js";
 import { multiSearchAlias } from "./graphql-documents.js";
 import { GraphQlError, SessionGraphQlTransport } from "./graphql-client.js";
@@ -322,44 +322,48 @@ export interface DepartmentFilterReport {
  */
 export class WoolworthsApi {
   private readonly session: Session;
-  private readonly authenticator: Authenticator;
 
   /** Every GraphQL operation. One session, one cookie jar, one request at a time. */
   private readonly cart: GraphQlCart;
+  private readonly autoSignIn: AutoSignIn | undefined;
 
   constructor(
     session: Session,
-    authenticator: Authenticator,
     now: () => number = Date.now,
     cart?: GraphQlCart,
+    autoSignIn?: AutoSignIn,
   ) {
     this.session = session;
-    this.authenticator = authenticator;
+    this.autoSignIn = autoSignIn;
     this.cart =
       cart ??
       new GraphQlCart(
-        new SessionGraphQlTransport(session, new Throttle(MIN_REQUEST_INTERVAL_MS)),
+        new SessionGraphQlTransport(session, new Throttle(MIN_REQUEST_INTERVAL_MS), autoSignIn),
         SIGNED_IN_TTL_MS,
         now,
       );
   }
 
-  /** Signs in if the session is anonymous, and reports the outcome either way. */
-  async signIn(): Promise<SignInOutcome> {
-    return this.authenticator.signIn((await this.checkAccountAccess()).usable);
+  /** Whether the server can sign itself in, and if it has stopped trying, why. */
+  async autoSignInStatus(): Promise<AutoSignInStatus> {
+    return this.autoSignIn === undefined
+      ? { state: "notConfigured" }
+      : await this.autoSignIn.status();
   }
 
   /**
-   * Adopts a session captured by a real browser sign-in (`npm run login`).
+   * Adopts a stored session, or one captured by a browser sign-in (`npm run login`).
    *
-   * This is how the server becomes signed in: Auth0 challenges non-browser clients with Turnstile,
-   * so a person signs in and hands the result over. Returns the signed-in state afterwards, so the
-   * caller learns whether the handover actually worked rather than assuming it did.
+   * Returns the signed-in state afterwards, so the caller learns whether the handover worked
+   * rather than assuming it did. A handover that works is a person acting, so it clears any stop
+   * on automatic sign-in.
    */
   async importSession(cookies: readonly ImportedCookie[]): Promise<AccountAccess> {
     await this.session.importCookies(cookies);
     this.invalidateSignedIn();
-    return this.checkAccountAccess();
+    const access = await this.checkAccountAccess();
+    if (access.usable) this.autoSignIn?.clearStop();
+    return access;
   }
 
   /**
@@ -372,11 +376,6 @@ export class WoolworthsApi {
   async checkAccountAccess(): Promise<AccountAccess> {
     const usable = await this.cart.isUsable();
     return { usable };
-  }
-
-  /** The session cookie's stated `Expires` date: an upper bound, not proof the session works. */
-  cookieExpiry(): Promise<Date | undefined> {
-    return this.session.cookieExpiry();
   }
 
   /**

@@ -68,17 +68,15 @@ await session.importCookies([
     url: "https://www.woolworths.co.nz/",
   },
 ]);
-check(
-  "the session starts signed in",
-  (await session.cookieExpiry()) !== undefined,
-  String(await session.cookieExpiry()),
-);
+const holdsSignIn = async (): Promise<boolean> =>
+  (await session.cookieNames()).includes("cw-lrkswrdjp");
+check("the session starts signed in", await holdsSignIn(), "cw-lrkswrdjp present");
 
 globalThis.fetch = stubFetch(undefined);
 await session.refreshBootstrap();
 globalThis.fetch = realFetch;
 
-const survived = (await session.cookieExpiry()) !== undefined;
+const survived = await holdsSignIn();
 check("recovering from a rejection keeps the sign-in", survived, survived ? "kept" : "DESTROYED");
 
 // --- 307 and 308 must carry the method, body and headers -------------------------------------

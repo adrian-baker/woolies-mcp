@@ -270,11 +270,30 @@ POST www/api/graphql  { me { id } }  confirms
 Plain authorization-code flow, no PKCE; the BFF hands over the whole authorize URL. Auth0's ULP is
 two-step — identifier, then password.
 
-**The server does not perform this.** Auth0 serves a Cloudflare Turnstile challenge to
-non-browser clients, and the form carries a `captcha` field a real browser is not asked to fill.
-`npm run login` opens a real browser, the person signs in, and the captured cookies are POSTed to
-`<mcp-path>/session`. The server persists them and reloads at boot; an unreadable stored session
-is fatal rather than ignored.
+**The server performs this itself, over plain HTTP**, when it holds a credentials file
+(`credential-signin.ts`). Observed on 2026-09-26 from the NAS container: neither form rendered a
+captcha to this client, which posts `js-available=false` as served, and the chain completed to
+`bff/login-callback` with account access demonstrated. Both steps are required: a password posted
+straight to `/u/login/password` is accepted by Auth0 and then refused by Keycloak ("Unexpected
+error when authenticating with identity provider"). The widget container
+(`data-captcha-sitekey`) is the signal, not the script, which every page ships.
+
+Auth0's bot detection is risk-based, so a clean chain today promises nothing about tomorrow, and
+each failed attempt counts towards a lockout on a real account. So the sign-in runs only when the
+site refuses the session (the GraphQL transport asks, then retries the call once), one attempt at
+a time; the first failure of any kind stops it, and so does a second sign-in within ten minutes
+of the last, which would only repeat one that did not take. A stop is never retried: it clears
+when the credentials file is rewritten, a browser session is handed over, or the process
+restarts. `auth_status` and every refused account call carry its reason. A captcha is a stop,
+never something to get past.
+
+The session it signs in is saved like a handed-over one, so a restart restores it. The
+credentials file is read on each attempt and is `{ "email", "password" }`, 0600, readable by the
+container user only; an absent file means automatic sign-in is off, a malformed one throws.
+
+`npm run login` remains for a deployment with no stored password: it opens a real browser, the
+person signs in, and the captured cookies are POSTed to `<mcp-path>/session`. The server persists
+them and reloads at boot; an unreadable stored session is fatal rather than ignored.
 
 `npm run login` captures every `woolworths.co.nz` cookie the browser holds and then verifies the
 capture by making the call the tools make — a cart read that proves `me`. A capture that does not
@@ -285,11 +304,9 @@ the migration and has been observed still reporting `isLoggedIn: false` after a 
 so the login script polls GraphQL `me` as well and prints what each signal said. Only a plainly
 stated answer counts as "not yet"; anything it cannot read throws.
 
-The shop session cookie `cw-lrkswrdjp` is dated 7 days ahead. That date is the site's claim about
-the cookie, an upper bound rather than a guarantee — a sign-out elsewhere, a password change or a
-security event ends the session earlier and the cookie keeps its original date. Only a live call
-proves a session, so the cookie date is reported as `cookieExpiresAt` only while account access
-has been demonstrated.
+No cookie date is reported. `cw-lrkswrdjp`, the cookie whose date was reported, is no longer set; the
+`__session__*` pair is dated a day ahead and re-minted from longer-lived cookies, and a session
+signed in on 2026-09-24 was still working two days later. Only a live call proves a session.
 
 **`/shell` is not a sufficient sign-in check.** `context.shopper.isLoggedIn` has been observed
 reading true while `trolleys/my` returned 401 on the same server at the same moment: the shop
@@ -317,14 +334,10 @@ Tokens are opaque and stored as SHA-256 only, so neither the state file nor the 
 working credential. Access tokens live an hour in memory; clients and refresh tokens persist, so a
 restart costs no approval. Refresh tokens rotate on use.
 
-**The refresh grant is refused while the Woolworths session is dead**, which is the point of the
-whole exercise and a deliberate deviation. A client holding a good refresh token renews in the
-background indefinitely and never asks the person anything, so an expired site session surfaces
-only as tools that fail. `invalid_grant` there makes the client discard its tokens and run the
-authorisation flow, which opens the consent page in a browser — the one moment the person is
-present and can be told the session needs renewing. The consent page states the session as
-signed-in, signed-out, or *not determined*: a site that did not answer must not read as signed
-out.
+The refresh grant does not look at the Woolworths session. A dead one is repaired by the server
+signing in again, and refusing a refresh would disconnect the catalogue tools with it, which work
+without a session. The consent page states the session as signed-in, signed-out, or *not
+determined*: a site that did not answer must not read as signed out.
 
 The passphrase check is rate-limited: five failures lock the page for fifteen minutes.
 Registration is open, which is what dynamic client registration means — the passphrase is the
