@@ -8,10 +8,12 @@ keyword search, product detail, and the delivery location those answers depend o
 The catalogue tools are read-only and need no account. Once signed in it can also read and fill
 your trolley — but it never places an order, pays, or books a delivery slot.
 
-**Authentication is human-driven.** A browser window opens and you sign in there, as you would on
-the website — the server never sees your password and stores no credentials. It keeps only the
-resulting session, whose cookie Woolworths dates 7 days ahead. See [DESIGN.md](DESIGN.md) for the API
-facts and the rules the server holds to.
+**It keeps itself signed in.** Store your Woolworths login once with `npm run credentials` and the
+server signs in again whenever the session dies, stopping at the first failure rather than
+retrying against your account. Prefer not to store a password? `npm run login` opens a browser
+for you to sign in, and the server keeps only the resulting session. See [DESIGN.md](DESIGN.md)
+for the API facts and the rules the server holds to, and [CHANGELOG.md](CHANGELOG.md) for what
+changed and how to upgrade.
 
 This is an unofficial project, not affiliated with Woolworths — please read
 [Unofficial, and what this is not](#unofficial-and-what-this-is-not) before using it.
@@ -27,6 +29,7 @@ This is an unofficial project, not affiliated with Woolworths — please read
 - [Politeness](#politeness)
 - [Layout](#layout)
 - [Restore](#restore)
+- [Upgrading](CHANGELOG.md#upgrading-from-10)
 - [Unofficial, and what this is not](#unofficial-and-what-this-is-not)
 
 ## Tools

@@ -10,7 +10,7 @@ import { Session, type SessionOptions } from "./woolworths/session.js";
 import type { SessionStore } from "./session-store.js";
 
 export const SERVER_NAME = "woolies-mcp";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "1.1.0";
 
 export interface ServerOptions {
   readonly session?: SessionOptions;

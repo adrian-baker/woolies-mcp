@@ -1,6 +1,6 @@
 {
   "name": "woolies-mcp",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "MCP server for shopping the Woolworths New Zealand catalogue: search, product detail, delivery location and cart.",
   "license": "MIT",
   "author": "Adrian Baker",
@@ -30,7 +30,8 @@
   "files": [
     "dist",
     "README.md",
-    "DESIGN.md"
+    "DESIGN.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
