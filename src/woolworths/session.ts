@@ -33,7 +33,7 @@ export interface ImportedCookie {
  * and `fetch`'s automatic redirect handling would discard them.
  */
 export class Session {
-  private readonly jar = new CookieJar();
+  private jar = new CookieJar();
   private readonly timeoutMs: number;
   private inFlightBootstrap: Promise<void> | undefined;
 
@@ -123,6 +123,15 @@ export class Session {
       target = next;
     }
     throw new SessionError(`More than ${maxRedirects} redirects starting at ${url.href}`);
+  }
+
+  /**
+   * Takes over another session's cookies, replacing every one this session held. A sign-in is
+   * performed on a fresh session and adopted only once proven, so a failed one never touches the
+   * shared jar and a working one carries nothing over from the session it replaces.
+   */
+  adopt(other: Session): void {
+    this.jar = other.jar;
   }
 
   /**

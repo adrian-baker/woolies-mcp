@@ -5,7 +5,7 @@ import { registerLocationTools } from "./tools/location.js";
 import { registerProductTools } from "./tools/products.js";
 import { registerStoreTools } from "./tools/stores.js";
 import { WoolworthsApi } from "./woolworths/api.js";
-import { AutoSignIn, performCredentialSignIn } from "./woolworths/credential-signin.js";
+import { AutoSignIn, signInFresh } from "./woolworths/credential-signin.js";
 import { Session, type SessionOptions } from "./woolworths/session.js";
 import type { SessionStore } from "./session-store.js";
 
@@ -33,7 +33,7 @@ export function createWoolworthsApi(options: ServerOptions = {}): WoolworthsApi 
       ? undefined
       : new AutoSignIn({
           credentialsPath,
-          signIn: (credentials) => performCredentialSignIn(session, credentials),
+          signIn: (credentials) => signInFresh(session, credentials, options.session ?? {}),
           onSignedIn: async () => {
             if (store !== undefined) await store.save(await session.exportCookies());
           },

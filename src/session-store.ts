@@ -130,6 +130,6 @@ export async function restoreStoredSession(
   const access = await api.importSession(cookies);
   console.error(
     `[${serverName}] restored session from ${store.location}: accountToolsUsable=${access.usable}` +
-      (access.usable ? "" : " (run `npm run login` again)"),
+      (access.usable ? "" : "; auth_status says why and what to do"),
   );
 }

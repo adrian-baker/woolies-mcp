@@ -18,6 +18,7 @@ import {
   performCredentialSignIn,
   readKeycloakError,
   readLoginPage,
+  signInFresh,
   type Credentials,
   type RecoveryOutcome,
   type SignInResult,
@@ -99,6 +100,7 @@ function stubSite(
   passwordPage: string,
   outcome: PasswordOutcome,
   posted: Posted[],
+  graphqlAnswersSignedIn = true,
 ): typeof globalThis.fetch {
   const redirect = (location: string): Response =>
     new Response(null, { status: 302, headers: { location } });
@@ -162,9 +164,41 @@ function stubSite(
             : page(KEYCLOAK_ERROR_PAGE),
         );
       case "GET www.woolworths.co.nz/api/v1.0/bff/login-callback":
-        return Promise.resolve(redirect("https://www.woolworths.co.nz/"));
+        return Promise.resolve(
+          new Response(null, {
+            status: 302,
+            headers: {
+              location: "https://www.woolworths.co.nz/",
+              "set-cookie": "signed=1; Path=/",
+            },
+          }),
+        );
       case "GET www.woolworths.co.nz/":
-        return Promise.resolve(page("<html>home</html>"));
+        return Promise.resolve(
+          new Response("<html>home</html>", {
+            status: 200,
+            headers: { "set-cookie": "edge=1; Path=/" },
+          }),
+        );
+      case "GET www.woolworths.co.nz/cart":
+        return Promise.resolve(
+          new Response("<html/>", {
+            status: 200,
+            headers: { "set-cookie": "__session__0=m; Path=/" },
+          }),
+        );
+      case "POST www.woolworths.co.nz/api/graphql":
+        return Promise.resolve(
+          new Response(
+            graphqlAnswersSignedIn
+              ? JSON.stringify({ data: { me: { id: "shopper" } } })
+              : JSON.stringify({
+                  data: null,
+                  errors: [{ message: "banned", extensions: { code: "BANNED_OPERATION" } }],
+                }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
     }
     return Promise.resolve(new Response(`unexpected ${key}`, { status: 599 }));
   };
@@ -239,6 +273,43 @@ console.log("\nThe chain, against a stubbed site");
     "arriving back on the site without the BFF callback is not a sign-in",
     skipped.result.kind === "refused" && skipped.result.reason.includes("login-callback"),
     JSON.stringify(skipped.result),
+  );
+}
+
+console.log("\nSigning in on a fresh session");
+{
+  async function freshRun(
+    signedIn: boolean,
+  ): Promise<{ readonly result: SignInResult; readonly names: string }> {
+    const shared = new Session();
+    await shared.importCookies([
+      { setCookie: "stale=1; Path=/", url: "https://www.woolworths.co.nz/" },
+    ]);
+    globalThis.fetch = stubSite(PASSWORD_PAGE, "signedIn", [], signedIn);
+    try {
+      const result = await signInFresh(shared, credentials);
+      return { result, names: [...(await shared.cookieNames())].sort().join(",") };
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  const proven = await freshRun(true);
+  check(
+    "a proven sign-in replaces the shared session, carrying none of the old cookies over",
+    proven.result.kind === "signedIn" &&
+      proven.names.includes("signed") &&
+      !proven.names.includes("stale"),
+    `${JSON.stringify(proven.result)}; shared now holds ${proven.names}`,
+  );
+
+  const guest = await freshRun(false);
+  check(
+    "a chain that completes as a guest is refused, and the shared session is left alone",
+    guest.result.kind === "refused" &&
+      guest.result.reason.includes("guest") &&
+      guest.names === "stale",
+    `${JSON.stringify(guest.result)}; shared still holds ${guest.names}`,
   );
 }
 

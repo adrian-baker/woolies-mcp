@@ -1,5 +1,9 @@
 import { readFile, stat } from "node:fs/promises";
-import { LOGIN_CHAIN_REDIRECTS, SITE_ORIGIN, type Session } from "./session.js";
+import { NotSignedInError } from "./auth.js";
+import { SessionGraphQlTransport } from "./graphql-client.js";
+import { IDENTITY_DOCUMENT, IDENTITY_OPERATION } from "./graphql-documents.js";
+import { LOGIN_CHAIN_REDIRECTS, SITE_ORIGIN, Session, type SessionOptions } from "./session.js";
+import { Throttle } from "./throttle.js";
 
 /**
  * Signs the shared session in with a stored email and password, over plain HTTP.
@@ -127,6 +131,42 @@ export async function performCredentialSignIn(
       (keycloak === undefined ? "" : `: "${keycloak}"`),
   );
 }
+
+/**
+ * Signs in on a fresh session, proves it, and only then gives its cookies to `shared`.
+ *
+ * Signing in inside a jar that still holds the previous session's cookies was observed to complete
+ * the chain and still leave `/api/graphql` answering as a guest; a fresh jar signs in cleanly. The
+ * proof is the account call the tools make, so "signed in" here means the tools will work.
+ */
+export async function signInFresh(
+  shared: Session,
+  credentials: Credentials,
+  options: SessionOptions = {},
+): Promise<SignInResult> {
+  const fresh = new Session(options);
+  await fresh.bootstrap();
+  const result = await performCredentialSignIn(fresh, credentials);
+  if (result.kind !== "signedIn") return result;
+
+  const transport = new SessionGraphQlTransport(fresh, new Throttle(PROOF_INTERVAL_MS));
+  try {
+    const data = await transport.send(IDENTITY_OPERATION, IDENTITY_DOCUMENT, {});
+    if (typeof data.me?.id !== "string" || data.me.id === "") {
+      return refused("the chain completed but the site named no signed-in shopper");
+    }
+  } catch (error: unknown) {
+    if (error instanceof NotSignedInError) {
+      return refused("the chain completed but the site still answers as a guest");
+    }
+    throw error;
+  }
+  shared.adopt(fresh);
+  return result;
+}
+
+/** The proof is two requests; spaced as every other request this server makes. */
+const PROOF_INTERVAL_MS = 1_000;
 
 interface Followed {
   readonly url: string;
